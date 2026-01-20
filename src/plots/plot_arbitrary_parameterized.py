@@ -3,10 +3,11 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
-# Add the parent directory to the path to import from sims
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add the parent directory to the path to import from 2d/Arbitrary Shape
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '2d', 'Arbitrary Shape'))
 
-from sims.arbitrary_parameterized import Arbitrary_Shape_Parameterized, sample_star_shape, create_mesh_from_star_shape
+from arbitrary_parameterized import Arbitrary_Shape_Parameterized
+from arbitrary_helpers import sample_star_shape, create_mesh_from_star_shape
 
 def plot_boundary(points, ax, color='black', linewidth=2, label='Boundary'):
     """

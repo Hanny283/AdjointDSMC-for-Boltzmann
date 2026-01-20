@@ -1,11 +1,32 @@
 import numpy as np
-import helpers as hf 
-import periodic_bc as pb
+import sys
+import os
+
+# Add paths for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_basic_shapes_dir = os.path.dirname(_current_dir)
+_2d_dir = os.path.dirname(_basic_shapes_dir)
+_src_dir = os.path.dirname(_2d_dir)
+
+# Add directories to path
+if _2d_dir not in sys.path:
+    sys.path.insert(0, _2d_dir)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+# Import from same directory (Grid/)
+import Grid_bc as gbc
+
+# Import from 2d directory
+import general_helpers as gh
+
+# Import from src directory
+import universal_sim_helpers as uh
 
 
 def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S, dx, T_x0=1.0, T_y0=1.0, bc="pc"):
-    positions = hf.assign_positions_2d(N, Lx, Ly)
-    velocities = hf.sample_velocities_from_maxwellian_2d(T_x0, T_y0, N)
+    positions = gh.assign_positions_2d(N, Lx, Ly)
+    velocities = gh.sample_velocities_from_maxwellian_2d(T_x0, T_y0, N)
 
     #spatial discretization
     cell_width = Lx / ncx
@@ -47,7 +68,7 @@ def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S,
         #compute upper bound cross section for each cell 
 
         upper_bound_cross_sections = np.array([
-        hf.compute_upper_bound_cross_section(cell) if len(cell) else 0.0
+        uh.compute_upper_bound_cross_section(cell) if len(cell) else 0.0
         for cell in cell_velocities.ravel()
         ]).reshape(ncx, ncy)
 
@@ -58,14 +79,14 @@ def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S,
         # Expected pairs to collide per cell
 
         Nc = np.minimum(
-            hf.Iround((particles_per_cell * rho_cell * upper_bound_cross_sections * dt)/ (2*e)), 
+            uh.Iround((particles_per_cell * rho_cell * upper_bound_cross_sections * dt)/ (2*e)), 
             particles_per_cell // 2
             )
 
 
         #sample and pair indices per cell 
 
-        sampled_indices = hf.sample_particle_indices_to_collide_grid(Nc, cell_velocities) 
+        sampled_indices = uh.sample_particle_indices_to_collide_grid(Nc, cell_velocities) 
 
 
         indices_i_global = []
@@ -78,7 +99,7 @@ def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S,
                 if len(idx_local) == 0 :
                     continue
 
-                pairs_loc = hf.pair_particle_indices_2d(idx_local)
+                pairs_loc = gh.pair_particle_indices_2d(idx_local)
                 indices_particles_i = pairs_loc[:,0]
                 indices_particles_j = pairs_loc[:,1]
 
@@ -96,7 +117,7 @@ def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S,
             v_rel = velocities[indices_ij] - velocities[indices_kl]
             v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
 
-            sigma_ijkl = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
+            sigma_ijkl = uh.ArraySigma_VHS(v_rel_mag).reshape(-1)
 
             Sigma_pairs_of_pairs = upper_bound_cross_sections[particle_cell_indices[indices_ij][:, 0], particle_cell_indices[indices_ij][:, 1]]
 
@@ -108,17 +129,17 @@ def Nanbu_Babovsky_2D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, ncx, ncy, S,
             indices_kl = indices_kl[accept_condition]
 
             if len(indices_ij) > 0:
-                velocities = hf.collide_particles_2d(velocities, indices_ij, indices_kl)
+                velocities = gh.collide_particles_2d(velocities, indices_ij, indices_kl)
 
-            positions = hf.update_positions_2d(positions, velocities, dt)
+            positions = gh.update_positions_2d(positions, velocities, dt)
 
             # Apply boundary conditions based on bc parameter
             if bc == "pc":  # periodic boundary condition
-                positions = pb.periodic_BC_2d(positions, Lx, Ly)
+                positions = gbc.periodic_BC_2d(positions, Lx, Ly)
             elif bc == "rf":  # reflecting boundary condition
-                velocities, positions = pb.reflecting_BC_2d(velocities, positions, Lx, Ly)
+                velocities, positions = gbc.reflecting_BC_2d(velocities, positions, Lx, Ly)
             elif bc == "mx":  # Maxwell boundary condition
-                velocities, positions = pb.maxwell_bc_2d(positions, velocities, Lx, Ly, alpha, T_x0, T_y0)
+                velocities, positions = gbc.maxwell_bc_2d(positions, velocities, Lx, Ly, alpha, T_x0, T_y0)
             else:
                 raise ValueError(f"Invalid boundary condition '{bc}'. Must be 'pc', 'rf', or 'mx'.")
 

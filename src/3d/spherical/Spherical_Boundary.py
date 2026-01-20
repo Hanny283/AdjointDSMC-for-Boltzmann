@@ -1,11 +1,27 @@
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+# Add paths for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_3d_dir = os.path.dirname(_current_dir)
+_src_dir = os.path.dirname(_3d_dir)
+
+# Add directories to path
+if _3d_dir not in sys.path:
+    sys.path.insert(0, _3d_dir)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+# Import from same directory (Spherical/)
 import spherical_helpers as hf
-import general_helpers as gh
+import spherical_bc as bc
+
+# Import from 3d directory
+import general_helpers_3d as gh3
+
+# Import from src directory
 import universal_sim_helpers as uh
-import periodic_bc as pb
 
 # Optional pygmsh import - will create simple mesh if not available
 HAS_PYGMSH = False
@@ -93,7 +109,7 @@ class cell_tetrahedron:
             return 0
         ub_sigma = self.upper_bound_cross_section()
         expected_pairs = (num_particles * self.rho_cell * ub_sigma * dt) / (2 * e) if e != 0 else 0.0
-        expected_pairs_int = hf.Iround(expected_pairs)
+        expected_pairs_int = uh.Iround(expected_pairs)
         max_pairs = num_particles // 2
         return int(min(expected_pairs_int, max_pairs))
     
@@ -131,7 +147,7 @@ def Spherical_Boundary(N, R, positions, radius, T_x0, T_y0, T_z0, dt, n_tot, e, 
     positions = hf.assign_positions_spherical(N, R)
     print("Generated initial positions")
     
-    velocities = hf.sample_velocities_from_maxwellian_3d(T_x0, T_y0, T_z0, N)
+    velocities = gh3.sample_velocities_from_maxwellian_3d(T_x0, T_y0, T_z0, N)
     print("Generated initial velocities")
 
     cell_width = radius / buckets_x
@@ -246,7 +262,7 @@ def Spherical_Boundary(N, R, positions, radius, T_x0, T_y0, T_z0, dt, n_tot, e, 
                 v_rel = cell.particle_velocities[indices_i] - cell.particle_velocities[indices_j]
                 v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
 
-                sigma_ij = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
+                sigma_ij = uh.ArraySigma_VHS(v_rel_mag).reshape(-1)
 
                 Upper_bound_cross_sections = cell.upper_bound_cross_section()
 
@@ -261,7 +277,7 @@ def Spherical_Boundary(N, R, positions, radius, T_x0, T_y0, T_z0, dt, n_tot, e, 
                     cell.collide_and_update_particles(dt, indices_i, indices_j)
 
         # Apply spherical reflecting BC on global arrays
-        velocities, positions = pb.reflecting_BC_spherical(velocities, positions, R)
+        velocities, positions = bc.reflecting_BC_spherical(velocities, positions, R)
 
         temperature_history[n] = np.sum(velocities**2) / velocities.shape[0]
 

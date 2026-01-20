@@ -1,19 +1,31 @@
 import pygmsh 
-import arbitrary_helpers as hf
 import numpy as np
-import general_helpers as gh
-import universal_sim_helpers as uh
-import arbitrary_bc as bc
 import time
-import cell_class as ct
 import sys
 import os
 from scipy.spatial import cKDTree
 
-# Add root directory to path to import edge_class
-_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _root_dir not in sys.path:
-    sys.path.insert(0, _root_dir)
+# Add paths for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_2d_dir = os.path.dirname(_current_dir)
+_src_dir = os.path.dirname(_2d_dir)
+
+# Add directories to path
+if _2d_dir not in sys.path:
+    sys.path.insert(0, _2d_dir)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+# Import from same directory (Arbitrary Shape/)
+import arbitrary_helpers as hf
+import arbitrary_bc as bc
+
+# Import from 2d directory
+import general_helpers as gh
+
+# Import from src directory
+import universal_sim_helpers as uh
+import cell_class as ct
 from edge_class import Edge
 
 
@@ -95,7 +107,7 @@ def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, 
                 v_rel = cell.particle_velocities[indices_i] - cell.particle_velocities[indices_j]
                 v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
 
-                sigma_ij = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
+                sigma_ij = uh.ArraySigma_VHS(v_rel_mag).reshape(-1)
 
                 Upper_bound_cross_sections = cell.upper_bound_cross_section()
                 

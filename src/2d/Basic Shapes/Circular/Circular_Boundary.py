@@ -1,11 +1,24 @@
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+import pygmsh
+
+# Add paths for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_basic_shapes_dir = os.path.dirname(_current_dir)
+_2d_dir = os.path.dirname(_basic_shapes_dir)
+_src_dir = os.path.dirname(_2d_dir)
+
+# Add directories to path
+if _2d_dir not in sys.path:
+    sys.path.insert(0, _2d_dir)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
 import circular_helpers as hf
+import circular_bc as bc
 import general_helpers as gh
 import universal_sim_helpers as uh
-import pygmsh
 import cell_class as ct
 
 def Circular_Boundary(N, R, positions, radius, T_x0, T_y0, dt, n_tot, e, mu, alpha, buckets_x, buckets_y):
@@ -70,7 +83,7 @@ def Circular_Boundary(N, R, positions, radius, T_x0, T_y0, dt, n_tot, e, mu, alp
                 v_rel = cell.particle_velocities[indices_i] - cell.particle_velocities[indices_j]
                 v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
 
-                sigma_ij = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
+                sigma_ij = uh.ArraySigma_VHS(v_rel_mag).reshape(-1)
 
                 Upper_bound_cross_sections = cell.upper_bound_cross_section()
 
@@ -85,7 +98,7 @@ def Circular_Boundary(N, R, positions, radius, T_x0, T_y0, dt, n_tot, e, mu, alp
                     cell.collide_and_update_particles(dt, indices_i, indices_j)
 
         # Apply circular reflecting BC on global arrays
-        velocities, positions = pb.reflecting_BC_circular(velocities, positions, R)
+        velocities, positions = bc.reflecting_BC_circular(velocities, positions, R)
 
         # Track temperature
         temperature_history[n] = np.sum(velocities**2) / velocities.shape[0]

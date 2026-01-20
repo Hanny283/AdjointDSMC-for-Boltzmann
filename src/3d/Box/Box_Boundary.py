@@ -1,6 +1,31 @@
+import numpy as np
+import sys
+import os
+
+# Add paths for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_3d_dir = os.path.dirname(_current_dir)
+_src_dir = os.path.dirname(_3d_dir)
+
+# Add directories to path
+if _3d_dir not in sys.path:
+    sys.path.insert(0, _3d_dir)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+# Import from same directory (Box/)
+import Box_bc as gbc
+
+# Import from 3d directory
+import general_helpers_3d as gh3
+
+# Import from src directory
+import universal_sim_helpers as uh
+
+
 def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy, ncz, S, dx, T_x0=1.0, T_y0=1.0, T_z0=1.0, bc="pc"):
-    positions = hf.assign_positions_3d(N, Lx, Ly, Lz)
-    velocities = hf.sample_velocities_from_maxwellian_3d(T_x0, T_y0, T_z0, N)
+    positions = gh3.assign_positions_3d(N, Lx, Ly, Lz)
+    velocities = gh3.sample_velocities_from_maxwellian_3d(T_x0, T_y0, T_z0, N)
 
     #spatial discretization
     cell_width = Lx / ncx
@@ -43,7 +68,7 @@ def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy
         #compute upper bound cross section for each cell 
 
         upper_bound_cross_sections = np.array([
-            hf.compute_upper_bound_cross_section(cell) if len(cell) else 0.0
+            uh.compute_upper_bound_cross_section(cell) if len(cell) else 0.0
             for cell in cell_velocities.ravel()
             ]).reshape(ncx, ncy, ncz)
 
@@ -53,13 +78,13 @@ def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy
         # Expected pairs to collide per cell
 
         Nc = np.minimum(
-            hf.Iround((particles_per_cell * rho_cell * upper_bound_cross_sections * dt)/ (2*e)), 
+            uh.Iround((particles_per_cell * rho_cell * upper_bound_cross_sections * dt)/ (2*e)), 
             particles_per_cell // 2
             )
 
         #sample and pair indices per cell 
 
-        sampled_indices = hf.sample_particle_indices_to_collide_grid(Nc, cell_velocities) 
+        sampled_indices = uh.sample_particle_indices_to_collide_grid(Nc, cell_velocities) 
 
         indices_i_global = []
         indices_j_global = []
@@ -72,7 +97,7 @@ def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy
                     if len(idx_local) == 0 :
                         continue
 
-                    pairs_loc = hf.pair_particle_indices_3d(idx_local)
+                    pairs_loc = gh3.pair_particle_indices_3d(idx_local)
 
                     indices_particles_i = pairs_loc[:,0]
                     indices_particles_j = pairs_loc[:,1]
@@ -91,7 +116,7 @@ def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy
             v_rel = velocities[indices_ij] - velocities[indices_kl]
             v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
 
-            sigma_ijkl = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
+            sigma_ijkl = uh.ArraySigma_VHS(v_rel_mag).reshape(-1)
 
             Sigma_pairs_of_pairs = upper_bound_cross_sections[particle_cell_indices[indices_ij][:, 0], particle_cell_indices[indices_ij][:, 1], particle_cell_indices[indices_ij][:, 2]]
 
@@ -103,17 +128,17 @@ def Nanbu_Babovsky_3D_Periodic(N, dt, n_tot, e , mu, alpha, Lx, Ly, Lz, ncx, ncy
             indices_kl = indices_kl[accept_condition]
 
             if len(indices_ij) > 0:
-                velocities = hf.collide_particles_3d(velocities, indices_ij, indices_kl)
+                velocities = gh3.collide_particles_3d(velocities, indices_ij, indices_kl)
 
-            positions = hf.update_positions_3d(positions, velocities, dt)
+            positions = gh3.update_positions_3d(positions, velocities, dt)
 
             # Apply boundary conditions based on bc parameter
             if bc == "pc":  # periodic boundary condition
-                positions = pb.periodic_BC_3d(positions, Lx, Ly, Lz)
+                positions = gbc.periodic_BC_3d(positions, Lx, Ly, Lz)
             elif bc == "rf":  # reflecting boundary condition
-                velocities, positions = pb.reflecting_BC_3d(velocities, positions, Lx, Ly, Lz)
+                velocities, positions = gbc.reflecting_BC_3d(velocities, positions, Lx, Ly, Lz)
             elif bc == "mx":  # Maxwell boundary condition
-                velocities, positions = pb.maxwell_bc_3d(positions, velocities, Lx, Ly, Lz, alpha, T_x0, T_y0, T_z0)
+                velocities, positions = gbc.maxwell_bc_3d(positions, velocities, Lx, Ly, Lz, alpha, T_x0, T_y0, T_z0)
             else:
                 raise ValueError(f"Invalid boundary condition '{bc}'. Must be 'pc', 'rf', or 'mx'.")
 

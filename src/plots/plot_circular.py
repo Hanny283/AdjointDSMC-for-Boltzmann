@@ -5,7 +5,7 @@ import pygmsh
 
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sims'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '2d', 'Basic Shapes', 'Circular'))
 from Circular_Boundary import Circular_Boundary
 
 

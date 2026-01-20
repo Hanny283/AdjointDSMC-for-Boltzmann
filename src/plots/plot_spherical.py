@@ -4,9 +4,9 @@ from mpl_toolkits.mplot3d import Axes3D
 
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '3d', 'Spherical'))
 
-from sims.Spherical_Boundary import Spherical_Boundary
+from Spherical_Boundary import Spherical_Boundary
 
 
 def main():
