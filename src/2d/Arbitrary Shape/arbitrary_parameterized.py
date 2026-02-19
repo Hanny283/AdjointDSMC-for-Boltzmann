@@ -74,6 +74,9 @@ def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, 
     velocities = gh.sample_velocities_from_maxwellian_2d(T_x0, T_y0, N)
     
     cell_list, edge_to_cells = hf.create_cell_list_and_adjacency_lists(mesh)
+    
+    # Create cached boundary structure once (reused for all time steps)
+    cached_boundary = hf.CachedBoundary(boundary_points)
 
     for position, velocity in zip(positions, velocities):
         for cell in cell_list:
@@ -126,14 +129,40 @@ def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, 
         total_kinetic_energy = 0.0
         total_particles = 0
         
-        for cell in cell_list:
+        # OPTIMIZED: Collect all particles globally for boundary condition processing
+        all_positions = []
+        all_velocities = []
+        particle_to_cell = []  # Track which cell each particle belongs to
+        
+        for cell_idx, cell in enumerate(cell_list):
             if len(cell.particle_positions) > 0:
-                cell.particle_velocities, cell.particle_positions = bc.reflecting_BC_arbitrary_shape(
-                    cell.particle_velocities, cell.particle_positions, boundary_points
-                )
-                # Track temperature (sum of squared velocities)
-                total_kinetic_energy += np.sum(cell.particle_velocities**2)
-                total_particles += len(cell.particle_velocities)
+                num_particles = len(cell.particle_positions)
+                all_positions.append(cell.particle_positions)
+                all_velocities.append(cell.particle_velocities)
+                particle_to_cell.extend([cell_idx] * num_particles)
+        
+        # Process all particles globally with cached boundary
+        if len(all_positions) > 0:
+            global_positions = np.vstack(all_positions)
+            global_velocities = np.vstack(all_velocities)
+            
+            # Apply boundary condition globally (vectorized)
+            global_velocities, global_positions = bc.reflecting_BC_arbitrary_shape(
+                global_velocities, global_positions, boundary_points, cached_boundary=cached_boundary
+            )
+            
+            # Redistribute particles back to cells
+            particle_idx = 0
+            for cell_idx, cell in enumerate(cell_list):
+                if len(cell.particle_positions) > 0:
+                    num_particles = len(cell.particle_positions)
+                    cell.particle_positions = global_positions[particle_idx:particle_idx + num_particles]
+                    cell.particle_velocities = global_velocities[particle_idx:particle_idx + num_particles]
+                    particle_idx += num_particles
+                    
+                    # Track temperature (sum of squared velocities)
+                    total_kinetic_energy += np.sum(cell.particle_velocities**2)
+                    total_particles += len(cell.particle_velocities)
         
         # Track temperature
         temperature_history[n] = total_kinetic_energy / total_particles if total_particles > 0 else 0.0

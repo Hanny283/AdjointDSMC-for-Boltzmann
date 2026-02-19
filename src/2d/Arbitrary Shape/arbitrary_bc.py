@@ -3,9 +3,24 @@ import arbitrary_helpers as hf
 import general_helpers as gh
 import random
 
-def reflecting_BC_arbitrary_shape(velocities, positions, boundary_points):
+# Global cache for boundary structures (keyed by boundary_points id)
+_boundary_cache = {}
+
+def _get_cached_boundary(boundary_points):
+    """Get or create cached boundary structure."""
+    # Use id() as key since boundary_points might be different objects
+    # In practice, we'll pass the cached boundary directly, but this is a fallback
+    boundary_id = id(boundary_points)
+    if boundary_id not in _boundary_cache:
+        _boundary_cache[boundary_id] = hf.CachedBoundary(boundary_points)
+    return _boundary_cache[boundary_id]
+
+
+def reflecting_BC_arbitrary_shape(velocities, positions, boundary_points, cached_boundary=None):
     """
     Apply reflecting boundary condition for arbitrary 2D shape (Algorithm 6.2).
+    
+    OPTIMIZED VERSION: Uses vectorized point-in-polygon and KD-tree for closest edge lookup.
     
     Uses overshoot mirroring: if particle overshoots boundary, mirror the 
     overshoot distance back using the reflected velocity direction.
@@ -14,83 +29,65 @@ def reflecting_BC_arbitrary_shape(velocities, positions, boundary_points):
     velocities: array of shape (N, 2) - particle velocities
     positions: array of shape (N, 2) - particle positions (already updated by dt)
     boundary_points: list of (x, y) tuples defining the shape boundary
-                    (should be actual B-spline boundary points, not control points)
+    cached_boundary: CachedBoundary object (optional, will create if None)
     
     Returns:
     velocities, positions: updated arrays after reflection
     """
-    # Get boundary edges
-    edges = hf.get_boundary_edges(boundary_points)
+    positions = np.asarray(positions)
+    velocities = np.asarray(velocities)
     
-    # Check which particles are outside the domain
-    outside_mask = np.zeros(len(positions), dtype=bool)
-    for i, pos in enumerate(positions):
-        # Use point-in-polygon test to determine if particle is outside
-        if not hf.point_in_polygon(pos[0], pos[1], boundary_points):
-            outside_mask[i] = True
+    if len(positions) == 0:
+        return velocities, positions
+    
+    # Get or create cached boundary
+    if cached_boundary is None:
+        cached_boundary = _get_cached_boundary(boundary_points)
+    
+    # Vectorized point-in-polygon check
+    inside_mask = hf.points_in_polygon_vectorized(positions, cached_boundary.boundary_points)
+    outside_mask = ~inside_mask
     
     if not np.any(outside_mask):
         return velocities, positions
     
-    # Process particles that are outside
-    for idx in np.where(outside_mask)[0]:
-        pos = positions[idx]
-        vel = velocities[idx]
-        
-        # Find the closest edge and reflect
-        min_dist = float('inf')
-        closest_edge = None
-        closest_point = None
-        
-        for edge in edges:
-            x1, y1, x2, y2 = edge
-            dist, closest_pt = hf.point_to_line_distance(pos[0], pos[1], x1, y1, x2, y2)
-            
-            if dist < min_dist:
-                min_dist = dist
-                closest_edge = edge
-                closest_point = closest_pt
-        
-        if closest_edge is not None:
-            x1, y1, x2, y2 = closest_edge
-            
-            # Get normal vector to the edge
-            normal_x, normal_y = hf.get_edge_normal(x1, y1, x2, y2)
-            normal = np.array([normal_x, normal_y])
-            
-            # Algorithm 6.2 approach: Mirror the overshoot distance
-            # Boundary crossing point
-            boundary_point = np.array(closest_point)
-            
-            # Overshoot vector (how far particle went past boundary)
-            overshoot = pos - boundary_point
-            
-            # Reflect velocity: v' = v - 2(v·n)n
-            vel_dot_normal = np.dot(vel, normal)
-            vel_reflected = vel - 2 * vel_dot_normal * normal
-            
-            # Reflect the overshoot: project overshoot onto reflected velocity direction
-            # This mirrors the overshoot distance back from boundary
-            overshoot_reflected = overshoot - 2 * np.dot(overshoot, normal) * normal
-            
-            # New position: boundary + reflected overshoot (Algorithm 6.2 formula)
-            positions[idx] = boundary_point + overshoot_reflected
-            velocities[idx] = vel_reflected
+    # Get positions and velocities of outside particles
+    outside_positions = positions[outside_mask]
+    outside_velocities = velocities[outside_mask]
+    outside_indices = np.where(outside_mask)[0]
+    
+    # Find closest edge info for all outside particles at once
+    edge_indices, distances, closest_points, normals = cached_boundary.get_closest_edge_info(outside_positions)
+    
+    # Vectorized reflection computation
+    # Overshoot vectors
+    overshoot = outside_positions - closest_points
+    
+    # Reflect velocities: v' = v - 2(v·n)n
+    vel_dot_normal = np.sum(outside_velocities * normals, axis=1, keepdims=True)
+    vel_reflected = outside_velocities - 2 * vel_dot_normal * normals
+    
+    # Reflect overshoot: overshoot' = overshoot - 2(overshoot·n)n
+    overshoot_dot_normal = np.sum(overshoot * normals, axis=1, keepdims=True)
+    overshoot_reflected = overshoot - 2 * overshoot_dot_normal * normals
+    
+    # New positions: boundary + reflected overshoot
+    new_positions = closest_points + overshoot_reflected
+    
+    # Update arrays
+    positions[outside_indices] = new_positions
+    velocities[outside_indices] = vel_reflected
     
     return velocities, positions
 
-def thermal_reflection(velocities, positions, boundary_points, Tx, Ty, accommodation_coefficient):
+def thermal_reflection(velocities, positions, boundary_points, Tx, Ty, accommodation_coefficient, cached_boundary=None):
     """
     Apply Maxwell thermal boundary condition with diffuse reflection for arbitrary 2D shape.
     
+    OPTIMIZED VERSION: Uses vectorized point-in-polygon and KD-tree for closest edge lookup.
+    
     With probability (1-α): specular reflection
     With probability α: diffuse thermal emission following Lambert's cosine law
-    
-    In diffuse (thermal) reflection:
-    - Particles are absorbed and re-emitted by the wall
-    - New velocity magnitude is drawn from Maxwellian at wall temperature
-    - Direction follows Lambert's cosine law over the inward-pointing hemisphere
-    - Most probable direction is along inward normal, but all inward angles are possible
     
     Parameters:
     velocities: array of shape (N, 2) - particle velocities
@@ -98,107 +95,76 @@ def thermal_reflection(velocities, positions, boundary_points, Tx, Ty, accommoda
     boundary_points: list of (x, y) tuples defining the shape boundary
     Tx, Ty: float - wall temperatures (for Maxwellian velocity distribution)
     accommodation_coefficient: float - thermal accommodation coefficient α ∈ [0,1]
-                              α=0: fully specular, α=1: fully diffuse (thermal)
+    cached_boundary: CachedBoundary object (optional, will create if None)
     
     Returns:
     velocities, positions: updated arrays after reflection
     """
-    edges = hf.get_boundary_edges(boundary_points)
+    positions = np.asarray(positions)
+    velocities = np.asarray(velocities)
     
-    # Check which particles are outside the domain
-    outside_mask = np.zeros(len(positions), dtype=bool)
-    for i, pos in enumerate(positions):
-        if not hf.point_in_polygon(pos[0], pos[1], boundary_points):
-            outside_mask[i] = True
+    if len(positions) == 0:
+        return velocities, positions
+    
+    # Get or create cached boundary
+    if cached_boundary is None:
+        cached_boundary = _get_cached_boundary(boundary_points)
+    
+    # Vectorized point-in-polygon check
+    inside_mask = hf.points_in_polygon_vectorized(positions, cached_boundary.boundary_points)
+    outside_mask = ~inside_mask
     
     if not np.any(outside_mask):
         return velocities, positions
     
-    # Process particles that are outside
-    for idx in np.where(outside_mask)[0]:
-        pos = positions[idx]
-        vel = velocities[idx]
+    # Get positions and velocities of outside particles
+    outside_positions = positions[outside_mask]
+    outside_velocities = velocities[outside_mask]
+    outside_indices = np.where(outside_mask)[0]
+    
+    # Find closest edge info for all outside particles
+    edge_indices, distances, closest_points, normals = cached_boundary.get_closest_edge_info(outside_positions)
+    
+    # Process each outside particle (thermal reflection requires per-particle randomness)
+    for i, idx in enumerate(outside_indices):
+        pos = outside_positions[i]
+        vel = outside_velocities[i]
+        normal = normals[i]
+        closest_point = closest_points[i]
         
-        # Find the closest edge (nearest point on boundary)
-        min_dist = float('inf')
-        closest_edge = None
-        closest_point = None
+        # For thermal reflection, we need the INWARD normal
+        to_particle = pos - closest_point
+        if np.dot(to_particle, normal) < 0:
+            normal = -normal
+        inward_normal = -normal
         
-        for edge in edges:
-            x1, y1, x2, y2 = edge
-            dist, closest_pt = hf.point_to_line_distance(pos[0], pos[1], x1, y1, x2, y2)
-            
-            if dist < min_dist:
-                min_dist = dist
-                closest_edge = edge
-                closest_point = closest_pt
+        # Decide reflection type
+        prob = random.random()
         
-        if closest_edge is not None:
-            x1, y1, x2, y2 = closest_edge
+        if prob <= (1.0 - accommodation_coefficient):
+            # SPECULAR REFLECTION
+            vel_dot_normal = np.dot(vel, normal)
+            vel_new = vel - 2 * vel_dot_normal * normal
+        else:
+            # DIFFUSE THERMAL REFLECTION
+            vel_sampled = gh.sample_velocities_from_maxwellian_2d(Tx, Ty, 1)[0]
+            speed = np.linalg.norm(vel_sampled)
             
-            # Get normal vector to the edge (pointing outward from domain)
-            normal_x, normal_y = hf.get_edge_normal(x1, y1, x2, y2)
-            normal = np.array([normal_x, normal_y])
+            u = random.random()
+            theta = np.arcsin(2.0 * u - 1.0)
             
-            # For thermal reflection, we need the INWARD normal (into the domain)
-            # Check if normal points outward by seeing if particle is in direction of normal
-            to_particle = pos - np.array(closest_point)
-            if np.dot(to_particle, normal) < 0:
-                # Normal points away from particle (inward), flip it to point outward
-                normal = -normal
+            tangent = np.array([-inward_normal[1], inward_normal[0]])
+            direction = np.cos(theta) * inward_normal + np.sin(theta) * tangent
+            direction = direction / np.linalg.norm(direction)
             
-            # Now normal points outward, so inward normal is -normal
-            inward_normal = -normal
+            vel_new = speed * direction
             
-            # Boundary crossing point (place particle at boundary)
-            boundary_point = np.array(closest_point)
-            
-            # Decide reflection type based on accommodation coefficient
-            prob = random.random()
-            
-            if prob <= (1.0 - accommodation_coefficient):
-                # SPECULAR REFLECTION (probability 1-α)
-                # Reflect velocity: v' = v - 2(v·n)n where n is outward normal
-                vel_dot_normal = np.dot(vel, normal)
-                vel_new = vel - 2 * vel_dot_normal * normal
-                
-            else:
-                # DIFFUSE THERMAL REFLECTION (probability α)
-                # Following Lambert's cosine law and Maxwellian distribution
-                
-                # Step 1: Sample speed from 2D Maxwellian distribution at wall temperature
-                # This gives us v = (vx, vy) ~ Maxwellian(T)
-                vel_sampled = gh.sample_velocities_from_maxwellian_2d(Tx, Ty, 1)[0]
-                speed = np.linalg.norm(vel_sampled)
-                
-                # Step 2: Sample direction using Lambert's cosine law
-                # In 2D, we sample angle θ from inward normal
-                # Lambert's law: pdf(θ) ∝ cos(θ) for θ ∈ [-π/2, π/2]
-                # CDF(θ) = (sin(θ) + 1)/2
-                # Inverse sampling: θ = arcsin(2u - 1) where u ~ U(0,1)
-                u = random.random()
-                theta = np.arcsin(2.0 * u - 1.0)  # Angle from inward normal
-                
-                # Step 3: Construct velocity in global coordinates
-                # Get tangent vector (perpendicular to inward normal)
-                tangent = np.array([-inward_normal[1], inward_normal[0]])
-                
-                # Direction unit vector: d = cos(θ)*n_in + sin(θ)*t
-                direction = np.cos(theta) * inward_normal + np.sin(theta) * tangent
-                direction = direction / np.linalg.norm(direction)  # Normalize
-                
-                # New velocity: speed * direction
-                vel_new = speed * direction
-                
-                # Safety check: ensure velocity points inward (v·n_in > 0)
-                if np.dot(vel_new, inward_normal) < 0:
-                    # Flip if pointing outward (shouldn't happen with correct sampling)
-                    vel_new = -vel_new
-            
-            # Update position and velocity
-            # Place particle at boundary (no time integration for simplicity)
-            positions[idx] = boundary_point
-            velocities[idx] = vel_new
+            if np.dot(vel_new, inward_normal) < 0:
+                vel_new = -vel_new
+        
+        # Update position and velocity
+        positions[idx] = closest_point
+        velocities[idx] = vel_new
     
     return velocities, positions
 

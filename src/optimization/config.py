@@ -9,7 +9,6 @@ import numpy as np
 
 # Optimization configuration
 OPTIMIZATION_CONFIG = {
-    # Fourier parameterization
     'M': 4,                    # Number of Fourier modes (total params = 2M+1 = 9)
     
     # Geometric constraints

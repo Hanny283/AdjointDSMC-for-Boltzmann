@@ -4,6 +4,162 @@ from edge_class import Edge
 import cell_class as ct
 from scipy.spatial import cKDTree
 
+
+class CachedBoundary:
+    """
+    Cached boundary structure for efficient boundary condition processing.
+    
+    Precomputes and caches:
+    - Boundary edges
+    - Edge normals
+    - KD-tree for closest edge lookup
+    - Edge segment array for vectorized operations
+    """
+    def __init__(self, boundary_points):
+        """
+        Initialize cached boundary structure.
+        
+        Parameters
+        ----------
+        boundary_points : array-like of shape (N, 2)
+            Boundary point coordinates
+        """
+        self.boundary_points = np.asarray(boundary_points)
+        self._edges = None
+        self._edge_segments = None
+        self._edge_normals = None
+        self._edge_midpoints = None
+        self._kdtree = None
+        self._compute_cache()
+    
+    def _compute_cache(self):
+        """Compute and cache all boundary data structures."""
+        # Get boundary edges
+        self._edges = get_boundary_edges(self.boundary_points)
+        
+        # Convert to array format [x1, y1, x2, y2] for each edge
+        num_edges = len(self._edges)
+        self._edge_segments = np.zeros((num_edges, 4))
+        self._edge_normals = np.zeros((num_edges, 2))
+        self._edge_midpoints = np.zeros((num_edges, 2))
+        
+        for i, edge in enumerate(self._edges):
+            x1, y1, x2, y2 = edge
+            self._edge_segments[i] = [x1, y1, x2, y2]
+            
+            # Compute normal
+            normal_x, normal_y = get_edge_normal(x1, y1, x2, y2)
+            self._edge_normals[i] = [normal_x, normal_y]
+            
+            # Compute midpoint for KD-tree
+            self._edge_midpoints[i] = [(x1 + x2) / 2, (y1 + y2) / 2]
+        
+        # Build KD-tree on edge midpoints for fast closest edge lookup
+        if len(self._edge_midpoints) > 0:
+            self._kdtree = cKDTree(self._edge_midpoints)
+    
+    @property
+    def edges(self):
+        """Get boundary edges."""
+        return self._edges
+    
+    @property
+    def edge_segments(self):
+        """Get edge segments as array [x1, y1, x2, y2]."""
+        return self._edge_segments
+    
+    @property
+    def edge_normals(self):
+        """Get edge normals as array."""
+        return self._edge_normals
+    
+    def find_closest_edges(self, positions, k=1):
+        """
+        Find closest edge(s) for each position using KD-tree.
+        
+        Parameters
+        ----------
+        positions : ndarray of shape (N, 2)
+            Positions to find closest edges for
+        k : int, optional
+            Number of closest edges to return (default: 1)
+            
+        Returns
+        -------
+        edge_indices : ndarray of shape (N, k)
+            Indices of closest edges
+        distances : ndarray of shape (N, k)
+            Distances to edge midpoints (approximate)
+        """
+        if self._kdtree is None or len(positions) == 0:
+            return np.array([]), np.array([])
+        
+        distances, indices = self._kdtree.query(positions, k=min(k, len(self._edge_segments)))
+        
+        if k == 1:
+            indices = indices.reshape(-1, 1)
+            distances = distances.reshape(-1, 1)
+        
+        return indices, distances
+    
+    def get_closest_edge_info(self, positions):
+        """
+        Get closest edge information (distance and closest point) for positions.
+        
+        Uses KD-tree to find candidate edges, then computes exact distances.
+        
+        Parameters
+        ----------
+        positions : ndarray of shape (N, 2)
+            Positions to process
+            
+        Returns
+        -------
+        edge_indices : ndarray of shape (N,)
+            Index of closest edge for each position
+        distances : ndarray of shape (N,)
+            Exact distance to closest edge
+        closest_points : ndarray of shape (N, 2)
+            Closest point on edge for each position
+        normals : ndarray of shape (N, 2)
+            Normal vector for closest edge
+        """
+        if len(positions) == 0:
+            return np.array([]), np.array([]), np.array([]), np.array([])
+        
+        # Find candidate edges using KD-tree (check 3 closest for accuracy)
+        candidate_indices, _ = self.find_closest_edges(positions, k=min(3, len(self._edge_segments)))
+        
+        N = len(positions)
+        edge_indices = np.zeros(N, dtype=int)
+        distances = np.full(N, np.inf)
+        closest_points = np.zeros((N, 2))
+        normals = np.zeros((N, 2))
+        
+        # For each position, check candidate edges and find true closest
+        for i, pos in enumerate(positions):
+            candidates = candidate_indices[i]
+            min_dist = np.inf
+            best_idx = 0
+            best_point = None
+            
+            for edge_idx in candidates:
+                edge = self._edge_segments[edge_idx]
+                x1, y1, x2, y2 = edge
+                dist, closest_pt = point_to_line_distance(pos[0], pos[1], x1, y1, x2, y2)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    best_idx = edge_idx
+                    best_point = closest_pt
+            
+            edge_indices[i] = best_idx
+            distances[i] = min_dist
+            closest_points[i] = best_point
+            normals[i] = self._edge_normals[best_idx]
+        
+        return edge_indices, distances, closest_points, normals
+
 def create_arbitrary_shape_mesh_2d(N,points, mesh_size=0.1):
     """
     Create an arbitrary shape in 2D using B-spline curves for smooth boundaries.
@@ -394,6 +550,132 @@ def point_in_polygon(point_x, point_y, polygon_points):
         previous_vertex_index = current_vertex_index
     
     return is_inside
+
+
+def points_in_polygon_vectorized(positions, polygon_points):
+    """
+    Vectorized point-in-polygon test for multiple points.
+    
+    Uses ray casting algorithm, vectorized for efficiency.
+    
+    Parameters
+    ----------
+    positions : ndarray of shape (N, 2)
+        Array of (x, y) coordinates to test
+    polygon_points : array-like of shape (M, 2)
+        Polygon vertices as (x, y) coordinates
+        
+    Returns
+    -------
+    inside_mask : ndarray of shape (N,) dtype bool
+        True for points inside polygon, False for outside
+    """
+    positions = np.asarray(positions)
+    polygon_points = np.asarray(polygon_points)
+    
+    if len(positions) == 0:
+        return np.array([], dtype=bool)
+    
+    num_vertices = len(polygon_points)
+    num_points = len(positions)
+    
+    # Extract coordinates
+    px = positions[:, 0]
+    py = positions[:, 1]
+    
+    # Initialize result
+    inside = np.zeros(num_points, dtype=bool)
+    
+    # Vectorized ray casting
+    prev_idx = num_vertices - 1
+    for curr_idx in range(num_vertices):
+        curr_x, curr_y = polygon_points[curr_idx]
+        prev_x, prev_y = polygon_points[prev_idx]
+        
+        # Vectorized condition: point crosses edge?
+        # Condition: ((curr_y > py) != (prev_y > py)) AND (px < intersection_x)
+        y_cross = (curr_y > py) != (prev_y > py)
+        
+        # Avoid division by zero
+        dy = prev_y - curr_y
+        valid = np.abs(dy) > 1e-12
+        
+        # Compute intersection x-coordinate
+        intersection_x = np.where(
+            valid,
+            (prev_x - curr_x) * (py - curr_y) / dy + curr_x,
+            np.inf
+        )
+        
+        # Update inside mask
+        mask = y_cross & (px < intersection_x)
+        inside[mask] = ~inside[mask]
+        
+        prev_idx = curr_idx
+    
+    return inside
+
+
+def point_to_line_distance_vectorized(positions, edge_segments):
+    """
+    Vectorized distance from points to line segments.
+    
+    Parameters
+    ----------
+    positions : ndarray of shape (N, 2)
+        Points to compute distances for
+    edge_segments : ndarray of shape (M, 4)
+        Edge segments as [x1, y1, x2, y2] for each edge
+        
+    Returns
+    -------
+    distances : ndarray of shape (N, M)
+        Distance from each point to each edge
+    closest_points : ndarray of shape (N, M, 2)
+        Closest point on each edge for each point
+    """
+    positions = np.asarray(positions)
+    edge_segments = np.asarray(edge_segments)
+    
+    if len(positions) == 0 or len(edge_segments) == 0:
+        return np.array([]), np.array([])
+    
+    N = len(positions)
+    M = len(edge_segments)
+    
+    # Extract edge coordinates
+    x1 = edge_segments[:, 0]  # (M,)
+    y1 = edge_segments[:, 1]  # (M,)
+    x2 = edge_segments[:, 2]  # (M,)
+    y2 = edge_segments[:, 3]  # (M,)
+    
+    # Edge vectors
+    dx = x2 - x1  # (M,)
+    dy = y2 - y1  # (M,)
+    line_length_sq = dx**2 + dy**2  # (M,)
+    
+    # Expand positions for broadcasting
+    px = positions[:, 0, None]  # (N, 1)
+    py = positions[:, 1, None]  # (N, 1)
+    
+    # Vectors from edge start to point: (N, M)
+    px_vec = px - x1[None, :]  # (N, M)
+    py_vec = py - y1[None, :]  # (N, M)
+    
+    # Project onto edge: t = (px_vec * dx + py_vec * dy) / line_length_sq
+    t = (px_vec * dx[None, :] + py_vec * dy[None, :]) / (line_length_sq[None, :] + 1e-12)
+    t = np.clip(t, 0, 1)  # (N, M)
+    
+    # Closest points on edges: (N, M, 2)
+    closest_x = x1[None, :, None] + t[:, :, None] * dx[None, :, None]
+    closest_y = y1[None, :, None] + t[:, :, None] * dy[None, :, None]
+    closest_points = np.stack([closest_x.squeeze(2), closest_y.squeeze(2)], axis=2)  # (N, M, 2)
+    
+    # Distances: (N, M)
+    distances = np.sqrt((px - closest_points[:, :, 0])**2 + 
+                       (py - closest_points[:, :, 1])**2)
+    
+    return distances, closest_points
 
 def triangle_to_follow(position, cell, edge_to_cells):
     """
