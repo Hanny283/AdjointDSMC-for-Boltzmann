@@ -1,0 +1,24 @@
+
+Differential Evolution Scrap Notes
+
+Generation 0: Random 135 shapes
+    ↓ Evaluate all
+    ↓ Find best (e.g., Shape 42 with obj=0.58)
+
+Generation 1:
+    For each of 135 shapes:
+        1. Mutation: mutant = best + F×(random_a - random_b)
+        2. Crossover: trial = mix(mutant, target, CR=0.7)
+        3. Evaluate: Run DSMC on trial
+        4. Select: Keep better of trial vs target
+    ↓ Update best (e.g., Shape 17 with obj=0.45)
+
+Generation 2:
+    For each of 135 shapes:
+        1. Mutation: mutant = NEW_best + F×(random_a - random_b)
+        2. Crossover: ...
+        3. Evaluate: ...
+        4. Select: ...
+    ↓ Update best (e.g., obj=0.39)
+
+...continue until convergence or maxiter=50

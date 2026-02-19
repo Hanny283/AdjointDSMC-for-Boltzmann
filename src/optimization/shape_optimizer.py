@@ -249,7 +249,7 @@ def objective_function(c, sim_params, opt_config, verbose=False):
         reg = compute_regularization(c, lambda_reg)
         
         # Total objective
-        obj = ke_per_particle + reg
+        obj = ke_in_square + reg  #total kinetic energy in square (ke_per_particle if we want to minimize average)
         
         if verbose:
             print(f"  Particles in square: {len(indices)} / {len(positions)}")

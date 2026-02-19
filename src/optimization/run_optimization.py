@@ -73,7 +73,7 @@ def run_optimization(opt_config=None, sim_params=None,
         Tracker with optimization history
     """
     
-    # ========== STEP 1: Configuration ==========
+    # Configs
     if verbose:
         print("\n" + "=" * 70)
         print("STAR-SHAPE BOUNDARY OPTIMIZATION")
@@ -98,7 +98,7 @@ def run_optimization(opt_config=None, sim_params=None,
         print_config_summary()
         print()
     
-    # ========== STEP 2: Initial Guess ==========
+    #STEP 2: Initial Guess 
     M = opt_config['M']
     R = initial_guess['R']
     
@@ -130,7 +130,7 @@ def run_optimization(opt_config=None, sim_params=None,
             print("Consider adjusting initial radius or constraint parameters.")
         print()
     
-    # ========== STEP 3: Set up Optimization ==========
+    # STEP 3: Set up Optimization
     bounds = get_parameter_bounds(M)
     constraints = build_constraints(opt_config)
     
@@ -146,13 +146,13 @@ def run_optimization(opt_config=None, sim_params=None,
         print(f"Workers: {opt_config['workers']}")
         print()
     
-    # ========== STEP 4: Initialize Tracker ==========
+    #STEP 4: Initialize Tracker 
     tracker = OptimizationTracker(output_dir=opt_config['output_dir'])
     
     # Evaluation counter
     eval_count = [0]  # Use list to allow modification in nested function
     
-    # ========== STEP 5: Define Callback ==========
+    #STEP 5: Define Callback
     def callback(xk, convergence=None):
         """
         Callback function called after each iteration.
@@ -200,7 +200,7 @@ def run_optimization(opt_config=None, sim_params=None,
         
         return False  # Continue optimization
     
-    # ========== STEP 6: Run Optimization ==========
+    # STEP 6: Run Optimization
     if verbose:
         print("=" * 70)
         print("RUNNING OPTIMIZATION")
@@ -259,7 +259,7 @@ def run_optimization(opt_config=None, sim_params=None,
         feasible, _ = check_all_constraints(result.x, opt_config, verbose=True)
         print()
     
-    # ========== STEP 8: Final Visualization ==========
+    # STEP 8: Final Visualization
     if verbose:
         print("Creating final visualizations...")
     
@@ -280,10 +280,10 @@ def run_optimization(opt_config=None, sim_params=None,
             print(f"  Area: {final_results['area']:.4f}")
             print(f"  Particles in square: {final_results['num_particles_in_square']} / {final_results['num_particles_total']}")
     
-    # ========== STEP 9: Save Summary ==========
+    # STEP 9: Save Summary
     tracker.save_summary()
     
-    # ========== STEP 10: Create Animation (if frames saved) ==========
+    #STEP 10: Create Animation (if frames saved)
     if opt_config['save_frames'] and len(os.listdir(tracker.frames_dir)) > 0:
         if verbose:
             print("\nCreating optimization animation...")
@@ -293,7 +293,7 @@ def run_optimization(opt_config=None, sim_params=None,
             print(f"  Could not create animation: {str(e)}")
             print("  (Install imageio and imageio-ffmpeg to enable animations)")
     
-    # ========== STEP 11: Final Summary ==========
+    # Final Summary
     if verbose:
         print("\n" + "=" * 70)
         print("SUMMARY")
