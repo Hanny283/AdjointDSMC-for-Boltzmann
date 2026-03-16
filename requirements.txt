@@ -1,4 +1,13 @@
 numpy
-matplotlib
-pygmsh
 scipy
+matplotlib
+Pillow
+
+# Mesh generation (gmsh must be installed before pygmsh)
+gmsh
+pygmsh
+meshio
+
+# Animation support (optional but recommended)
+imageio
+imageio-ffmpeg

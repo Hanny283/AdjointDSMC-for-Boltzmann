@@ -46,6 +46,27 @@ from optimization.viz_optimizer import (
 )
 
 
+class _ObjectiveWrapper:
+    """
+    Module-level picklable wrapper for the objective function.
+
+    A plain nested closure cannot be serialised by multiprocessing (which
+    scipy's differential_evolution uses when workers != 1).  A top-level
+    class with __call__ is fully picklable.
+    """
+    def __init__(self, sim_params: dict, opt_config: dict):
+        self.sim_params = sim_params
+        self.opt_config = opt_config
+
+    def __call__(self, c):
+        try:
+            return objective_function(c, self.sim_params, self.opt_config,
+                                      verbose=False)
+        except Exception as e:
+            print(f"ERROR in objective evaluation: {e}")
+            return 1e10
+
+
 def run_optimization(opt_config=None, sim_params=None, 
                     initial_guess=None, max_iterations=None,
                     verbose=True):
@@ -208,15 +229,9 @@ def run_optimization(opt_config=None, sim_params=None,
         print("This may take a while...")
         print()
     
-    # Define objective wrapper for scipy
-    def objective_wrapper(c):
-        """Wrapper to track evaluations and handle errors."""
-        try:
-            return objective_function(c, sim_params, opt_config, verbose=False)
-        except Exception as e:
-            print(f"ERROR in objective evaluation: {str(e)}")
-            return 1e10  # Return high penalty on error
-    
+    # Build a picklable objective wrapper (required for workers != 1)
+    objective_wrapper = _ObjectiveWrapper(sim_params, opt_config)
+
     # Run differential evolution
     result = scipy.optimize.differential_evolution(
         func=objective_wrapper,
@@ -232,7 +247,7 @@ def run_optimization(opt_config=None, sim_params=None,
         seed=opt_config['seed'],
         callback=callback,
         disp=verbose,
-        polish=True,  # Local refinement at the end
+        polish=opt_config.get('polish', False),
         init='latinhypercube',  # Good initial population distribution
         workers=opt_config['workers'],
         updating='deferred' if opt_config['workers'] != 1 else 'immediate'

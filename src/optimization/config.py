@@ -27,15 +27,16 @@ OPTIMIZATION_CONFIG = {
     'K_angles': 100,           # Number of angular samples for boundary constraints
     
     # Optimizer settings
-    'maxiter': 50,             # Maximum optimization iterations
-    'workers': 1,              # Number of parallel workers (1=sequential, -1=all cores)
-    'popsize': 15,             # Population size for differential_evolution
+    'maxiter': 20,             # Maximum optimization iterations
+    'workers': -1,             # Number of parallel workers (1=sequential, -1=all cores)
+    'popsize': 5,              # Population size multiplier → effective pop = popsize*(2M+1) = 45
     'tol': 0.01,               # Convergence tolerance
     'atol': 0.0,               # Absolute tolerance
     'strategy': 'best1bin',    # DE strategy
     'mutation': (0.5, 1),      # DE mutation factor range
     'recombination': 0.7,      # DE crossover probability
     'seed': None,              # Random seed (None for random)
+    'polish': False,           # L-BFGS-B polish is unreliable on stochastic objectives
     
     # Visualization settings
     'viz_interval': 5,         # Visualize every N iterations
@@ -44,28 +45,28 @@ OPTIMIZATION_CONFIG = {
 }
 
 # DSMC simulation configuration
-# Note: These parameters are optimized for speed during optimization
-# For final high-quality simulations, increase N and n_tot
+# These parameters balance physical fidelity with speed for the 30-run batch.
+# For final high-quality verification, use: N=3000, n_tot=100, mesh_size=0.25
 SIMULATION_CONFIG = {
     # Particle settings
-    'N': 3000,                 # Number of particles
-    
+    'N': 1500,                 # Number of particles (3000 for high-quality)
+
     # Time integration
     'dt': 0.01,                # Time step
-    'n_tot': 100,              # Total time steps (reduced for faster optimization)
-    
+    'n_tot': 50,               # Total time steps (100 for high-quality)
+
     # Initial conditions
     'T_x0': 1.0,               # Initial temperature in x-direction
     'T_y0': 1.0,               # Initial temperature in y-direction
-    
+
     # Collision parameters
     'e': 1.0,                  # Energy parameter for collision rate
     'mu': 1.0,                 # Viscosity parameter
     'alpha': 1.0,              # VHS model parameter
-    
+
     # Mesh settings
-    'num_boundary_points': 200,  # Number of points to sample boundary
-    'mesh_size': 0.25,         # Characteristic mesh size (larger = fewer, larger cells)
+    'num_boundary_points': 100,  # Boundary sample points (200 for high-quality)
+    'mesh_size': 0.4,          # Mesh cell size — larger = coarser = faster (0.25 for high-quality)
 }
 
 # Initial guess for optimization
