@@ -1,7 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from nanbu_babovsky import Nanbu_Babovsky_2D_Periodic, Nanbu_Babovsky_3D_Periodic
+import sys
+import os
+
+# Add paths for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '2d', 'Basic Shapes', 'Grid'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '3d', 'Box'))
+
+from Grid_Boundary import Nanbu_Babovsky_2D_Periodic
+from Box_Boundary import Nanbu_Babovsky_3D_Periodic
 
 def run_2d_simulation():
     """Run 2D DSMC simulation"""

@@ -3,10 +3,11 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
-# Add the parent directory to the path to import from sims
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add the parent directory to the path to import from 2d/Arbitrary Shape
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '2d', 'Arbitrary Shape'))
 
-from sims.arbitrary_parameterized import Arbitrary_Shape_Parameterized, sample_star_shape, create_mesh_from_star_shape
+from arbitrary_parameterized import Arbitrary_Shape_Parameterized
+from arbitrary_helpers import sample_star_shape, create_mesh_from_star_shape
 
 def plot_boundary(points, ax, color='black', linewidth=2, label='Boundary'):
     """
@@ -170,6 +171,13 @@ def main():
     print(f"Active Fourier modes: {M} (creates highly detailed organic shape)")
     print(f"Mesh size: {mesh_size} (larger = fewer cells)")
     
+    # Time the simulation
+    import time
+    simulation_start = time.time()
+    print("\n" + "=" * 70)
+    print("STARTING SIMULATION (with optimizations)")
+    print("=" * 70)
+    
     # Run the simulation (positions are generated internally with area weighting)
     positions, velocities, temperature_history, cell_list, boundary_points = Arbitrary_Shape_Parameterized(
         N=N,
@@ -188,8 +196,16 @@ def main():
     # Recreate mesh for visualization with same mesh_size
     mesh = create_mesh_from_star_shape(boundary_points, mesh_size=mesh_size)
     
-    print(f"Simulation completed!")
+    simulation_time = time.time() - simulation_start
+    print("\n" + "=" * 70)
+    print("SIMULATION COMPLETE")
+    print("=" * 70)
+    print(f"Total simulation time: {simulation_time:.2f} seconds ({simulation_time/60:.2f} minutes)")
+    print(f"Time per time step: {simulation_time/n_tot:.3f} seconds")
     print(f"Total mesh cells created: {len(cell_list)}")
+    print(f"Final particle count: {len(positions)}")
+    print("=" * 70)
+    print()
     
     # Create comprehensive visualization
     fig = plt.figure(figsize=(18, 12))

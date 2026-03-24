@@ -1,18 +1,252 @@
+import numpy as np 
 import pygmsh 
-import helpers as hf
-import numpy as np
-import periodic_bc as pb
-import time
+from edge_class import Edge
 import cell_class as ct
-import sys
-import os
 from scipy.spatial import cKDTree
 
-# Add root directory to path to import edge_class
-_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _root_dir not in sys.path:
-    sys.path.insert(0, _root_dir)
-from edge_class import Edge
+
+class CachedBoundary:
+    """
+    Cached boundary structure for efficient boundary condition processing.
+    
+    Precomputes and caches:
+    - Boundary edges
+    - Edge normals
+    - KD-tree for closest edge lookup
+    - Edge segment array for vectorized operations
+    """
+    def __init__(self, boundary_points):
+        """
+        Initialize cached boundary structure.
+        
+        Parameters
+        ----------
+        boundary_points : array-like of shape (N, 2)
+            Boundary point coordinates
+        """
+        self.boundary_points = np.asarray(boundary_points)
+        self._edges = None
+        self._edge_segments = None
+        self._edge_normals = None
+        self._edge_midpoints = None
+        self._kdtree = None
+        self._compute_cache()
+    
+    def _compute_cache(self):
+        """Compute and cache all boundary data structures."""
+        # Get boundary edges
+        self._edges = get_boundary_edges(self.boundary_points)
+        
+        # Convert to array format [x1, y1, x2, y2] for each edge
+        num_edges = len(self._edges)
+        self._edge_segments = np.zeros((num_edges, 4))
+        self._edge_normals = np.zeros((num_edges, 2))
+        self._edge_midpoints = np.zeros((num_edges, 2))
+        
+        for i, edge in enumerate(self._edges):
+            x1, y1, x2, y2 = edge
+            self._edge_segments[i] = [x1, y1, x2, y2]
+            
+            # Compute normal
+            normal_x, normal_y = get_edge_normal(x1, y1, x2, y2)
+            self._edge_normals[i] = [normal_x, normal_y]
+            
+            # Compute midpoint for KD-tree
+            self._edge_midpoints[i] = [(x1 + x2) / 2, (y1 + y2) / 2]
+        
+        # Build KD-tree on edge midpoints for fast closest edge lookup
+        if len(self._edge_midpoints) > 0:
+            self._kdtree = cKDTree(self._edge_midpoints)
+    
+    @property
+    def edges(self):
+        """Get boundary edges."""
+        return self._edges
+    
+    @property
+    def edge_segments(self):
+        """Get edge segments as array [x1, y1, x2, y2]."""
+        return self._edge_segments
+    
+    @property
+    def edge_normals(self):
+        """Get edge normals as array."""
+        return self._edge_normals
+    
+    def find_closest_edges(self, positions, k=1):
+        """
+        Find closest edge(s) for each position using KD-tree.
+        
+        Parameters
+        ----------
+        positions : ndarray of shape (N, 2)
+            Positions to find closest edges for
+        k : int, optional
+            Number of closest edges to return (default: 1)
+            
+        Returns
+        -------
+        edge_indices : ndarray of shape (N, k)
+            Indices of closest edges
+        distances : ndarray of shape (N, k)
+            Distances to edge midpoints (approximate)
+        """
+        if self._kdtree is None or len(positions) == 0:
+            return np.array([]), np.array([])
+        
+        distances, indices = self._kdtree.query(positions, k=min(k, len(self._edge_segments)))
+        
+        if k == 1:
+            indices = indices.reshape(-1, 1)
+            distances = distances.reshape(-1, 1)
+        
+        return indices, distances
+    
+    def get_closest_edge_info(self, positions):
+        """
+        Get closest edge information (distance and closest point) for positions.
+        
+        Uses KD-tree to find candidate edges, then computes exact distances.
+        
+        Parameters
+        ----------
+        positions : ndarray of shape (N, 2)
+            Positions to process
+            
+        Returns
+        -------
+        edge_indices : ndarray of shape (N,)
+            Index of closest edge for each position
+        distances : ndarray of shape (N,)
+            Exact distance to closest edge
+        closest_points : ndarray of shape (N, 2)
+            Closest point on edge for each position
+        normals : ndarray of shape (N, 2)
+            Normal vector for closest edge
+        """
+        if len(positions) == 0:
+            return np.array([]), np.array([]), np.array([]), np.array([])
+        
+        # Find candidate edges using KD-tree (check 3 closest for accuracy)
+        candidate_indices, _ = self.find_closest_edges(positions, k=min(3, len(self._edge_segments)))
+        
+        N = len(positions)
+        edge_indices = np.zeros(N, dtype=int)
+        distances = np.full(N, np.inf)
+        closest_points = np.zeros((N, 2))
+        normals = np.zeros((N, 2))
+        
+        # For each position, check candidate edges and find true closest
+        for i, pos in enumerate(positions):
+            candidates = candidate_indices[i]
+            min_dist = np.inf
+            best_idx = 0
+            best_point = None
+            
+            for edge_idx in candidates:
+                edge = self._edge_segments[edge_idx]
+                x1, y1, x2, y2 = edge
+                dist, closest_pt = point_to_line_distance(pos[0], pos[1], x1, y1, x2, y2)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    best_idx = edge_idx
+                    best_point = closest_pt
+            
+            edge_indices[i] = best_idx
+            distances[i] = min_dist
+            closest_points[i] = best_point
+            normals[i] = self._edge_normals[best_idx]
+        
+        return edge_indices, distances, closest_points, normals
+
+def create_arbitrary_shape_mesh_2d(N,points, mesh_size=0.1):
+    """
+    Create an arbitrary shape in 2D using B-spline curves for smooth boundaries.
+    
+    Parameters
+    ----------
+    N : int
+        Number of particles (not used for mesh generation, kept for compatibility)
+    points : array-like
+        Boundary points defining the shape
+    mesh_size : float, optional
+        Characteristic mesh size. Larger values = fewer, larger cells.
+        Default is 0.1. Typical range: 0.05 (fine) to 0.5 (coarse).
+    
+    Returns
+    -------
+    mesh : pygmsh mesh object
+        Generated triangular mesh
+    """
+
+    with pygmsh.occ.Geometry() as geom:
+
+        # 1) Add gmsh points with mesh size
+        gmpts = [geom.add_point([x, y], mesh_size=mesh_size) for (x, y) in points]
+
+        # 2) Create B-spline curve connecting all points
+        # For a closed B-spline, we need to repeat the first point at the end
+        closed_points = gmpts + [gmpts[0]]  # Close the curve
+        
+        # Create B-spline curve with the closed point list
+        bspline_curve = geom.add_bspline(closed_points)
+
+        # 3) Close the boundary: use a curve loop, then a plane surface
+        loop = geom.add_curve_loop([bspline_curve])
+        surf = geom.add_plane_surface(loop)
+
+        # tag the boundary as a Physical Group for later lookup
+        boundary_pg = geom.add_physical([bspline_curve], label="boundary")
+        domain_pg   = geom.add_physical([surf], label="domain")
+
+        # 4) Generate mesh (triangles by default)
+        mesh = geom.generate_mesh()
+
+    return mesh
+
+def assign_positions_arbitrary_2d(N, mesh):
+
+    # 1) Extract triangle data from mesh
+    triangle_indices = None
+    for cell in mesh.cells:
+        if cell.type == "triangle":
+            triangle_indices = cell.data
+            break
+    if triangle_indices is None:
+        raise ValueError("No triangles found.")
+
+    mesh_points = mesh.points  # x,y coordinates of all mesh points
+
+    # 2) Calculate triangle areas using cross product
+    vertex_a = mesh_points[triangle_indices[:, 0]]  # First vertex of each triangle
+    vertex_b = mesh_points[triangle_indices[:, 1]]  # Second vertex of each triangle
+    vertex_c = mesh_points[triangle_indices[:, 2]]  # Third vertex of each triangle
+    
+    # Calculate areas using 2D cross product formula
+    triangle_areas = 0.5 * np.abs((vertex_b[:, 0] - vertex_a[:, 0]) * (vertex_c[:, 1] - vertex_a[:, 1]) - 
+                                  (vertex_c[:, 0] - vertex_a[:, 0]) * (vertex_b[:, 1] - vertex_a[:, 1]))
+
+    # 3) Choose triangles by area-weighted sampling
+    selected_triangle_indices = np.random.choice(len(triangle_indices), size=N, p=triangle_areas / triangle_areas.sum())
+
+    # 4) Generate random barycentric coordinates (Marsaglia trick)
+    sqrt_random_1 = np.sqrt(np.random.rand(N, 1))
+    random_2 = np.random.rand(N, 1)
+    barycentric_u = 1 - sqrt_random_1
+    barycentric_v = sqrt_random_1 * (1 - random_2)
+    barycentric_w = sqrt_random_1 * random_2
+
+    # 5) Get vertices of selected triangles and compute final positions
+    selected_vertex_a = vertex_a[selected_triangle_indices]
+    selected_vertex_b = vertex_b[selected_triangle_indices]
+    selected_vertex_c = vertex_c[selected_triangle_indices]
+    particle_positions = barycentric_u * selected_vertex_a + barycentric_v * selected_vertex_b + barycentric_w * selected_vertex_c
+    
+    # Ensure we only return 2D positions
+    particle_positions = particle_positions[:, :2]
+    
+    return particle_positions
 
 def sample_star_shape(c, N):
     """
@@ -238,7 +472,7 @@ def point_to_line_distance(px, py, x1, y1, x2, y2):
     x1, y1 : float
         x and y coordinates of the start of the line segment
     x2, y2 : float
-        x and y coordinates of the end of the line segment
+        x and y coordinates of the end of  the line segment
 
     Returns:
     Calculate the distance from a point to a line segment.
@@ -316,6 +550,132 @@ def point_in_polygon(point_x, point_y, polygon_points):
         previous_vertex_index = current_vertex_index
     
     return is_inside
+
+
+def points_in_polygon_vectorized(positions, polygon_points):
+    """
+    Vectorized point-in-polygon test for multiple points.
+    
+    Uses ray casting algorithm, vectorized for efficiency.
+    
+    Parameters
+    ----------
+    positions : ndarray of shape (N, 2)
+        Array of (x, y) coordinates to test
+    polygon_points : array-like of shape (M, 2)
+        Polygon vertices as (x, y) coordinates
+        
+    Returns
+    -------
+    inside_mask : ndarray of shape (N,) dtype bool
+        True for points inside polygon, False for outside
+    """
+    positions = np.asarray(positions)
+    polygon_points = np.asarray(polygon_points)
+    
+    if len(positions) == 0:
+        return np.array([], dtype=bool)
+    
+    num_vertices = len(polygon_points)
+    num_points = len(positions)
+    
+    # Extract coordinates
+    px = positions[:, 0]
+    py = positions[:, 1]
+    
+    # Initialize result
+    inside = np.zeros(num_points, dtype=bool)
+    
+    # Vectorized ray casting
+    prev_idx = num_vertices - 1
+    for curr_idx in range(num_vertices):
+        curr_x, curr_y = polygon_points[curr_idx]
+        prev_x, prev_y = polygon_points[prev_idx]
+        
+        # Vectorized condition: point crosses edge?
+        # Condition: ((curr_y > py) != (prev_y > py)) AND (px < intersection_x)
+        y_cross = (curr_y > py) != (prev_y > py)
+        
+        # Avoid division by zero
+        dy = prev_y - curr_y
+        valid = np.abs(dy) > 1e-12
+        
+        # Compute intersection x-coordinate
+        intersection_x = np.where(
+            valid,
+            (prev_x - curr_x) * (py - curr_y) / dy + curr_x,
+            np.inf
+        )
+        
+        # Update inside mask
+        mask = y_cross & (px < intersection_x)
+        inside[mask] = ~inside[mask]
+        
+        prev_idx = curr_idx
+    
+    return inside
+
+
+def point_to_line_distance_vectorized(positions, edge_segments):
+    """
+    Vectorized distance from points to line segments.
+    
+    Parameters
+    ----------
+    positions : ndarray of shape (N, 2)
+        Points to compute distances for
+    edge_segments : ndarray of shape (M, 4)
+        Edge segments as [x1, y1, x2, y2] for each edge
+        
+    Returns
+    -------
+    distances : ndarray of shape (N, M)
+        Distance from each point to each edge
+    closest_points : ndarray of shape (N, M, 2)
+        Closest point on each edge for each point
+    """
+    positions = np.asarray(positions)
+    edge_segments = np.asarray(edge_segments)
+    
+    if len(positions) == 0 or len(edge_segments) == 0:
+        return np.array([]), np.array([])
+    
+    N = len(positions)
+    M = len(edge_segments)
+    
+    # Extract edge coordinates
+    x1 = edge_segments[:, 0]  # (M,)
+    y1 = edge_segments[:, 1]  # (M,)
+    x2 = edge_segments[:, 2]  # (M,)
+    y2 = edge_segments[:, 3]  # (M,)
+    
+    # Edge vectors
+    dx = x2 - x1  # (M,)
+    dy = y2 - y1  # (M,)
+    line_length_sq = dx**2 + dy**2  # (M,)
+    
+    # Expand positions for broadcasting
+    px = positions[:, 0, None]  # (N, 1)
+    py = positions[:, 1, None]  # (N, 1)
+    
+    # Vectors from edge start to point: (N, M)
+    px_vec = px - x1[None, :]  # (N, M)
+    py_vec = py - y1[None, :]  # (N, M)
+    
+    # Project onto edge: t = (px_vec * dx + py_vec * dy) / line_length_sq
+    t = (px_vec * dx[None, :] + py_vec * dy[None, :]) / (line_length_sq[None, :] + 1e-12)
+    t = np.clip(t, 0, 1)  # (N, M)
+    
+    # Closest points on edges: (N, M, 2)
+    closest_x = x1[None, :, None] + t[:, :, None] * dx[None, :, None]
+    closest_y = y1[None, :, None] + t[:, :, None] * dy[None, :, None]
+    closest_points = np.stack([closest_x.squeeze(2), closest_y.squeeze(2)], axis=2)  # (N, M, 2)
+    
+    # Distances: (N, M)
+    distances = np.sqrt((px - closest_points[:, :, 0])**2 + 
+                       (py - closest_points[:, :, 1])**2)
+    
+    return distances, closest_points
 
 def triangle_to_follow(position, cell, edge_to_cells):
     """
@@ -420,248 +780,3 @@ def find_containing_cell(position, start_cell, edge_to_cells):
             return current_cell
         
         current_cell = next_cell
-
-def reflecting_BC_arbitrary_shape(velocities, positions, boundary_points):
-    """
-    Apply reflecting boundary condition for arbitrary 2D shape.
-    
-    Parameters:
-    velocities: array of shape (N, 2) - particle velocities
-    positions: array of shape (N, 2) - particle positions
-    boundary_points: list of (x, y) tuples defining the shape boundary
-                    (should be actual B-spline boundary points, not control points)
-    
-    Returns:
-    velocities, positions: updated arrays after reflection
-    """
-    # Get boundary edges
-    edges = get_boundary_edges(boundary_points)
-    
-    # Check which particles are outside the domain
-    outside_mask = np.zeros(len(positions), dtype=bool)
-    for i, pos in enumerate(positions):
-        # Use point-in-polygon test to determine if particle is outside
-        if not point_in_polygon(pos[0], pos[1], boundary_points):
-            outside_mask[i] = True
-    
-    if not np.any(outside_mask):
-        return velocities, positions
-    
-    # Process particles that are outside
-    for idx in np.where(outside_mask)[0]:
-        pos = positions[idx]
-        vel = velocities[idx]
-        
-        # Find the closest edge and reflect
-        min_dist = float('inf')
-        closest_edge = None
-        closest_point = None
-        
-        for edge in edges:
-            x1, y1, x2, y2 = edge
-            dist, closest_pt = point_to_line_distance(pos[0], pos[1], x1, y1, x2, y2)
-            
-            if dist < min_dist:
-                min_dist = dist
-                closest_edge = edge
-                closest_point = closest_pt
-        
-        if closest_edge is not None:
-            x1, y1, x2, y2 = closest_edge
-            
-            # Get normal vector to the edge
-            normal_x, normal_y = get_edge_normal(x1, y1, x2, y2)
-            
-            # Project particle back to boundary
-            positions[idx] = np.array(closest_point)
-            
-            # Reflect velocity: v' = v - 2(v·n)n
-            vel_dot_normal = vel[0] * normal_x + vel[1] * normal_y
-            velocities[idx][0] = vel[0] - 2 * vel_dot_normal * normal_x
-            velocities[idx][1] = vel[1] - 2 * vel_dot_normal * normal_y
-    
-    return velocities, positions
-
-
-def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, T_x0, T_y0, dt, n_tot, e, mu, alpha, mesh_size=0.1):
-    """
-    Run DSMC simulation on arbitrary parameterized shape.
-    
-    Workflow:
-    1. Create mesh from fourier coefficients
-    2. Generate positions (area-weighted) and velocities
-    3. Create cell list and edge-to-cells mapping
-    4. Run algorithm (collide + update positions)
-    5. Apply boundary condition
-    6. Rebin particles that violate cell invariant
-    
-    Parameters
-    ----------
-    N : int
-        Number of particles
-    fourier_coefficients : array-like
-        Fourier coefficients defining the shape
-    num_boundary_points : int
-        Number of points to sample along boundary
-    T_x0, T_y0 : float
-        Initial temperatures in x and y directions
-    dt : float
-        Time step
-    n_tot : int
-        Total number of time steps
-    e : float
-        Parameter for collision rate
-    mu : float
-        Viscosity parameter (unused currently)
-    alpha : float
-        VHS model parameter (unused currently)
-    mesh_size : float, optional
-        Characteristic mesh size. Larger values = fewer, larger cells.
-        Default is 0.1. Recommended: 0.05 (fine) to 0.5 (coarse).
-    """
-    
-
-    boundary_points = sample_star_shape(fourier_coefficients, num_boundary_points)
-    mesh = hf.create_arbitrary_shape_mesh_2d(N, boundary_points, mesh_size=mesh_size)
-    
-    positions = hf.assign_positions_arbitrary_2d(N, mesh)
-    velocities = hf.sample_velocities_from_maxwellian_2d(T_x0, T_y0, N)
-    
-    cell_list, edge_to_cells = create_cell_list_and_adjacency_lists(mesh)
-
-    for position, velocity in zip(positions, velocities):
-        for cell in cell_list:
-            if cell.is_inside(position[0], position[1]):
-                cell.add_particle(position, velocity)
-                break
-    
-    temperature_history = np.zeros(n_tot)
-    
-    total_start_time = time.time()
-    
-    for n in range(n_tot):
-        step_start_time = time.time()
-        
-        # Step 4: Run collision algorithm
-        collision_start = time.time()
-        for cell in cell_list: 
-            num_collisions = cell.num_collisions(dt, e)
-
-            indices_particles = np.arange(len(cell.particle_positions))
-
-            indices_particles_to_collide = np.random.permutation(indices_particles)[:num_collisions]
-
-            indices_i = indices_particles_to_collide[:num_collisions // 2]
-            indices_j = indices_particles_to_collide[num_collisions // 2:]
-
-            indices_pairs = np.column_stack((indices_i, indices_j))
-            
-            if len(indices_i) > 0 and len(indices_j) > 0:
-
-                v_rel = cell.particle_velocities[indices_i] - cell.particle_velocities[indices_j]
-                v_rel_mag = np.linalg.norm(v_rel, axis=1, keepdims=True)
-
-                sigma_ij = hf.ArraySigma_VHS(v_rel_mag).reshape(-1)
-
-                Upper_bound_cross_sections = cell.upper_bound_cross_section()
-                
-                u_rand = np.random.rand(len(indices_i)) * Upper_bound_cross_sections
-
-                accept_condition = (u_rand < sigma_ij)
-
-                indices_i = indices_i[accept_condition]
-                indices_j = indices_j[accept_condition]
-
-                if len(indices_i) > 0:
-                    cell.collide_and_update_particles(dt, indices_i, indices_j)
-        collision_time = time.time() - collision_start
-
-        bc_start = time.time()
-        total_kinetic_energy = 0.0
-        total_particles = 0
-        
-        for cell in cell_list:
-            if len(cell.particle_positions) > 0:
-                cell.particle_velocities, cell.particle_positions = reflecting_BC_arbitrary_shape(
-                    cell.particle_velocities, cell.particle_positions, boundary_points
-                )
-                # Track temperature (sum of squared velocities)
-                total_kinetic_energy += np.sum(cell.particle_velocities**2)
-                total_particles += len(cell.particle_velocities)
-        
-        # Track temperature
-        temperature_history[n] = total_kinetic_energy / total_particles if total_particles > 0 else 0.0
-        bc_time = time.time() - bc_start
-
-        # Step 6: Rebin particles that violate cell invariant
-        rebin_start = time.time()
-        particles_to_move = []  # List of (old_cell, particle_idx, position, velocity)
-        
-        # Loop through cells and detect particles that don't respect the invariant
-        for cell in cell_list:
-            indices_to_remove = []
-            for i, position in enumerate(cell.particle_positions):
-                if not cell.is_inside(position[0], position[1]):
-                    # Particle violates invariant - mark for removal and rebinning
-                    particles_to_move.append((cell, i, position, cell.particle_velocities[i]))
-                    indices_to_remove.append(i)
-            
-            # Remove violating particles from this cell (in reverse order to preserve indices)
-            for i in reversed(indices_to_remove):
-                cell.remove_particle(i)
-        
-        # Now reassign the violating particles to their correct cells
-        if len(particles_to_move) > 0:
-            # Extract all positions for nearest centroid lookup
-            positions_to_rebin = np.array([position for _, _, position, _ in particles_to_move])
-            
-            # Find nearest centroid cells for all particles at once using KD-tree
-            nearest_cells = find_nearest_centroid_cell_kdtree(positions_to_rebin, cell_list)
-            
-            # Now iterate through and find containing cells using triangle following
-            for (old_cell, _, position, velocity), nearest_cell in zip(particles_to_move, nearest_cells):
-                # Use triangle_to_follow to iteratively find the containing cell
-                containing_cell = find_containing_cell(position, nearest_cell, edge_to_cells)
-                
-                # Add particle to the containing cell
-                containing_cell.add_particle(position, velocity)
-        
-        rebin_time = time.time() - rebin_start
-        
-        step_time = time.time() - step_start_time
-        
-        # Print progress every 10 steps or on last step
-        if (n + 1) % 10 == 0 or (n + 1) == n_tot:
-            print(f"{n+1}/{n_tot} ", end="", flush=True)
-            if (n + 1) == n_tot or (n + 1) % 50 == 0:
-                num_moved = len(particles_to_move)
-                print(f"\n  Step {n+1} timing: collisions={collision_time:.3f}s, "
-                      f"BC={bc_time:.3f}s, rebin={rebin_time:.3f}s, total={step_time:.3f}s")
-                print(f"  Rebinned {num_moved} particles", flush=True)
-    
-    # Reconstruct final global arrays from cells
-    all_positions = []
-    all_velocities = []
-    for cell in cell_list:
-        if len(cell.particle_positions) > 0:
-            all_positions.append(cell.particle_positions)
-            all_velocities.append(cell.particle_velocities)
-    
-    if all_positions:
-        final_positions = np.vstack(all_positions)
-        final_velocities = np.vstack(all_velocities)
-    else:
-        final_positions = np.empty((0, 2))
-        final_velocities = np.empty((0, 2))
-    
-    total_time = time.time() - total_start_time
-    print(f"\nSimulation completed in {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
-    print(f"Average time per step: {total_time/n_tot:.3f} seconds")
-    
-    return final_positions, final_velocities, temperature_history, cell_list, boundary_points
-
-
-
-
-
-

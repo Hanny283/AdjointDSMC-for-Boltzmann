@@ -1,0 +1,29 @@
+======================================================================
+BEST SOLUTION COEFFICIENTS
+======================================================================
+
+Extracted from iteration 20 (closest to best objective)
+Best objective value: 1.8378
+Iteration 20 objective: 2.1246
+
+Fourier coefficients (M=4 modes):
+
+c0 (base radius) = 1.900000
+
+Cosine terms:
+c1 (cos 1θ) =  -0.300000
+c2 (cos 2θ) =  -0.300000
+c3 (cos 3θ) =   0.000000
+c4 (cos 4θ) =   0.000000
+
+Sine terms:
+c5 (sin 1θ) =   0.400000
+c6 (sin 2θ) =   0.150000
+c7 (sin 3θ) =   0.000000
+c8 (sin 4θ) =   0.000000
+
+======================================================================
+
+NumPy array format:
+c = np.array([np.float64(1.9), np.float64(-0.3), np.float64(-0.3), np.float64(0.0), np.float64(0.0), np.float64(0.4), np.float64(0.15), np.float64(0.0), np.float64(0.0)])
+======================================================================
