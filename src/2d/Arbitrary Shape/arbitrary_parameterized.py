@@ -29,7 +29,7 @@ import cell_class as ct
 from edge_class import Edge
 
 
-def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, T_x0, T_y0, dt, n_tot, e, mu, alpha, mesh_size=0.1):
+def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, T_x0, T_y0, dt, n_tot, e, mu, alpha, mesh_size=0.1, T_wall_x=None, T_wall_y=None, accommodation_coefficient=0.0):
     """
     Run DSMC simulation on arbitrary parameterized shape.
     
@@ -64,6 +64,14 @@ def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, 
     mesh_size : float, optional
         Characteristic mesh size. Larger values = fewer, larger cells.
         Default is 0.1. Recommended: 0.05 (fine) to 0.5 (coarse).
+    T_wall_x : float, optional
+        Wall temperature in x-direction for thermal (Maxwell) BC.
+        If None or accommodation_coefficient==0.0, uses specular reflection.
+    T_wall_y : float, optional
+        Wall temperature in y-direction for thermal BC.
+    accommodation_coefficient : float, optional
+        Thermal accommodation coefficient α ∈ [0, 1].
+        0.0 = fully specular (default), 1.0 = fully diffuse thermal.
     """
     
 
@@ -146,10 +154,21 @@ def Arbitrary_Shape_Parameterized(N, fourier_coefficients, num_boundary_points, 
             global_positions = np.vstack(all_positions)
             global_velocities = np.vstack(all_velocities)
             
-            # Apply boundary condition globally (vectorized)
-            global_velocities, global_positions = bc.reflecting_BC_arbitrary_shape(
-                global_velocities, global_positions, boundary_points, cached_boundary=cached_boundary
-            )
+            # Apply boundary condition globally
+            _use_thermal = (accommodation_coefficient > 0.0
+                            and T_wall_x is not None
+                            and T_wall_y is not None)
+            if _use_thermal:
+                global_velocities, global_positions = bc.thermal_reflection(
+                    global_velocities, global_positions, boundary_points,
+                    T_wall_x, T_wall_y, accommodation_coefficient,
+                    cached_boundary=cached_boundary
+                )
+            else:
+                global_velocities, global_positions = bc.reflecting_BC_arbitrary_shape(
+                    global_velocities, global_positions, boundary_points,
+                    cached_boundary=cached_boundary
+                )
             
             # Redistribute particles back to cells
             particle_idx = 0

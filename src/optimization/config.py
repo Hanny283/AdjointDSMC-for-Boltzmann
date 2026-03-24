@@ -9,7 +9,7 @@ import numpy as np
 
 # Optimization configuration
 OPTIMIZATION_CONFIG = {
-    'M': 4,                    # Number of Fourier modes (total params = 2M+1 = 9)
+    'M': 2,                    # Number of Fourier modes (total params = 2M+1 = 5)
     
     # Geometric constraints
     'a': 0.5,                  # Half-side length of inscribed square (square: [-a,a]×[-a,a])
@@ -46,14 +46,16 @@ OPTIMIZATION_CONFIG = {
 
 # DSMC simulation configuration
 # These parameters balance physical fidelity with speed for the 30-run batch.
-# For final high-quality verification, use: N=3000, n_tot=100, mesh_size=0.25
+# Thermal walls (T_wall << T_x0) create a spatial temperature gradient whose
+# shape depends on the boundary geometry, making the objective boundary-sensitive.
+# For final high-quality verification, use: N=5000, n_tot=150, mesh_size=0.25
 SIMULATION_CONFIG = {
     # Particle settings
-    'N': 1500,                 # Number of particles (3000 for high-quality)
+    'N': 2500,                 # Increased for lower Monte Carlo noise
 
     # Time integration
     'dt': 0.01,                # Time step
-    'n_tot': 50,               # Total time steps (100 for high-quality)
+    'n_tot': 80,               # Enough steps for a thermal gradient to develop from wall to center
 
     # Initial conditions
     'T_x0': 1.0,               # Initial temperature in x-direction
@@ -65,8 +67,16 @@ SIMULATION_CONFIG = {
     'alpha': 1.0,              # VHS model parameter
 
     # Mesh settings
-    'num_boundary_points': 100,  # Boundary sample points (200 for high-quality)
-    'mesh_size': 0.4,          # Mesh cell size — larger = coarser = faster (0.25 for high-quality)
+    'num_boundary_points': 100,  # Boundary sample points
+    'mesh_size': 0.4,          # Mesh cell size — larger = coarser = faster
+
+    # Thermal wall boundary condition
+    # Cold walls (T_wall = 0.2) are 5× cooler than the initial gas (T=1.0).
+    # The boundary extracts energy from the gas; how fast the center cools
+    # depends on the boundary shape, breaking the specular-wall degeneracy.
+    'T_wall_x': 0.2,
+    'T_wall_y': 0.2,
+    'accommodation_coefficient': 1.0,   # Fully diffuse Maxwell reflection
 }
 
 # Initial guess for optimization
@@ -142,6 +152,8 @@ def print_config_summary():
     print(f"  Time steps (n_tot): {SIMULATION_CONFIG['n_tot']}")
     print(f"  Time step (dt): {SIMULATION_CONFIG['dt']}")
     print(f"  Mesh size: {SIMULATION_CONFIG['mesh_size']}")
+    print(f"  Wall temperature (Tx, Ty): ({SIMULATION_CONFIG.get('T_wall_x', 'specular')}, {SIMULATION_CONFIG.get('T_wall_y', 'specular')})")
+    print(f"  Accommodation coefficient: {SIMULATION_CONFIG.get('accommodation_coefficient', 0.0)}")
     print(f"\nInitial Guess:")
     print(f"  Circle radius: {INITIAL_GUESS['R']}")
     print("=" * 70)

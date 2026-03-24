@@ -472,7 +472,7 @@ def point_to_line_distance(px, py, x1, y1, x2, y2):
     x1, y1 : float
         x and y coordinates of the start of the line segment
     x2, y2 : float
-        x and y coordinates of the end of the line segment
+        x and y coordinates of the end of  the line segment
 
     Returns:
     Calculate the distance from a point to a line segment.

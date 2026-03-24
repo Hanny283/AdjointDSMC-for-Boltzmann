@@ -226,7 +226,10 @@ def objective_function(c, sim_params, opt_config, verbose=False):
                 e=sim_params['e'],
                 mu=sim_params['mu'],
                 alpha=sim_params['alpha'],
-                mesh_size=sim_params['mesh_size']
+                mesh_size=sim_params['mesh_size'],
+                T_wall_x=sim_params.get('T_wall_x'),
+                T_wall_y=sim_params.get('T_wall_y'),
+                accommodation_coefficient=sim_params.get('accommodation_coefficient', 0.0),
             )
         
         # Filter particles in square region
@@ -248,8 +251,8 @@ def objective_function(c, sim_params, opt_config, verbose=False):
         # Compute regularization
         reg = compute_regularization(c, lambda_reg)
         
-        # Total objective
-        obj = ke_in_square + reg  #total kinetic energy in square (ke_per_particle if we want to minimize average)
+        # Total objective — per-particle KE so boundary shape matters, not domain size
+        obj = ke_per_particle + reg
         
         if verbose:
             print(f"  Particles in square: {len(indices)} / {len(positions)}")
@@ -317,7 +320,10 @@ def evaluate_with_details(c, sim_params, opt_config):
                 e=sim_params['e'],
                 mu=sim_params['mu'],
                 alpha=sim_params['alpha'],
-                mesh_size=sim_params['mesh_size']
+                mesh_size=sim_params['mesh_size'],
+                T_wall_x=sim_params.get('T_wall_x'),
+                T_wall_y=sim_params.get('T_wall_y'),
+                accommodation_coefficient=sim_params.get('accommodation_coefficient', 0.0),
             )
         
         # Particle analysis
