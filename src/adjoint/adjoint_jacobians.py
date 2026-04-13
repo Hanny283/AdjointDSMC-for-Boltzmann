@@ -113,6 +113,8 @@ def dtheta_dv_prime(theta_inter: float, x_k, v_k, C) -> np.ndarray:
     numerator   = r * np.array([s, -c]) + np.array([-xy, xx])
     denominator = r_th * (vy * c - vx * s) - 2 * np.pi * r * (vy * s + vx * c)
 
+    if abs(denominator) < 1e-2:   # near-tangential: gradient is singular → zero out
+        return np.zeros(2)
     return numerator / denominator
 
 
@@ -155,6 +157,8 @@ def dtheta_dx(theta_inter: float, v_k, C) -> np.ndarray:
     numerator   = np.array([vy, -vx])
     denominator = r_th * (vy * c - vx * s) - 2 * np.pi * r * (vy * s + vx * c)
 
+    if abs(denominator) < 1e-2:   # near-tangential: gradient is singular → zero out
+        return np.zeros(2)
     return numerator / denominator
 
 

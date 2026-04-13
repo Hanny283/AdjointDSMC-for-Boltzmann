@@ -1,27 +1,25 @@
 """
-Simple DSMC shape optimisation — cluster version.
+Simple DSMC shape optimisation — 2-mode local quick-test.
+
+Identical to experiments/simple/run_simple_cluster.py but uses N_FOURIER=2
+so the boundary is parameterised by only 5 coefficients:
+
+    C = [c₀, a₁, a₂, b₁, b₂]
+
+With fewer modes the problem is lower-dimensional and the adjoint gradient
+signal must suppress only 2-lobe (a₂, b₂) and 1-lobe (a₁, b₁) distortions.
+Convergence to a circle is faster and serves as a cleaner proof-of-concept.
+
+This is the LOCAL quick-test version (N_PARTICLES=200, N_AVG=4, N_ITER=60).
+Results will be noisy but should show the correct directional trend.
 
 Objective : minimise mean squared radius  L = (1/N) Σᵢ |xᵢᴹ|²
 Constraint: area(C) ≈ A_TARGET  (quadratic penalty, coefficient LAM_AREA)
-
-Theory: under a fixed-area constraint the circle is the provable global
-minimum of mean |x|² for ANY number of Fourier modes (Jensen's inequality).
-The perimeter constraint does NOT share this property for k≥3 modes.
-
-Improvements over the local script:
-  • N_AVG gradient realisations parallelised across N_WORKERS CPU cores.
-  • Adam optimiser with per-coefficient adaptive learning rates.
-  • N_PARTICLES≈1000, N_STEPS≈50–80, and Bird's parameter e≈5–20 so collision
-    rate is reduced (adjoint signal survives to the final time; see table in docs).
-  • Explicit BIRD_E, MESH_SIZE, NUM_BOUNDARY_POINTS for ForwardSimulation.
-  • Soft area penalty (LAM_AREA) keeps domain area near A_TARGET.
-
-Expected runtime: scales with N_PARTICLES·N_STEPS·N_AVG (e.g. ~10–30 min for
-300 iterations on a 16-core CPU depending on mesh build cost).
+Provably optimal shape: circle (Jensen's inequality, fixed area).
 
 Run:
-    python experiments/simple/run_simple_cluster.py
-Outputs saved to experiments/simple/.
+    python experiments/2_mode_simple/run_2mode_simple_cluster.py
+Outputs saved to experiments/2_mode_simple/.
 """
 
 import sys, os, warnings, time
@@ -50,18 +48,14 @@ from adjoint.visualization import (
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── Parameters ────────────────────────────────────────────────────────────────
-# Bird's parameter e: expected cell collisions scale as 1/e.  Larger e → fewer
-# collisions per step (typical range 5–20 for boundary-dominated gradients).
-BIRD_E = 10.0
-
-# Triangle mesh for cell-based collisions (see ForwardSimulation).
-MESH_SIZE           = 0.25   # smaller → more cells (good for N_PARTICLES≈1000)
+BIRD_E              = 10.0
+MESH_SIZE           = 0.25
 NUM_BOUNDARY_POINTS = 100
 
-N_PARTICLES = 1000
-N_FOURIER   = 3
+N_PARTICLES = 200
+N_FOURIER   = 2           # only modes k=1,2 → C = [c0, a1, a2, b1, b2]
 DT          = 0.10
-N_STEPS     = 60           # 50–80 recommended for more boundary interactions
+N_STEPS     = 20
 SEED_INIT   = 42
 
 R_INIT     = 0.80
@@ -69,16 +63,15 @@ BOX_HALF   = 1.20
 INNER_HALF = 0.35
 R_MAX      = BOX_HALF
 
-N_ITER    = 600
+N_ITER    = 60
 LR        = 6e-3          # Adam learning rate (decays to LR_MIN over training)
 LR_MIN    = 5e-4          # cosine-annealing floor — fine-tunes near circle
 LAM_BOX   = 8.0
 LAM_AREA  = 30.0          # area-equality penalty: keeps Area(C) ≈ A_TARGET
 
-N_AVG     = 32            # gradient realisations per iteration (32–64 typical)
-N_WORKERS = 16            # parallel workers (physical cores)
+N_AVG     = 4
+N_WORKERS = 4
 
-# Adam hyper-parameters
 BETA1    = 0.9
 BETA2    = 0.999
 EPS_ADAM = 1e-8
@@ -87,16 +80,14 @@ C0_MIN     = 0.35
 C0_MAX     = 1.10
 A_MAX_FRAC = 0.45
 
-# ── Initial condition: irregular multi-lobe shape ─────────────────────────────
-# C = [c0, a1, a2, a3, b1, b2, b3]
-# Dominant 3-lobe (a3) + 2-lobe (a2) + asymmetric breaks (b2, b3).
+# ── Initial condition: 2-lobe distorted shape ─────────────────────────────────
+# C = [c0, a1, a2, b1, b2]
+# Dominant 2-lobe (a2) + small 1-lobe (a1) + asymmetric break (b2).
 C_init = np.zeros(2 * N_FOURIER + 1)
 C_init[0] = 0.75
-C_init[1] = 0.05
-C_init[2] = 0.10
-C_init[3] = 0.20
-C_init[N_FOURIER + 2] = 0.08
-C_init[N_FOURIER + 3] = 0.06
+C_init[1] = 0.05          # a1 — slight 1-lobe tilt
+C_init[2] = 0.18          # a2 — dominant 2-lobe (ellipse-like)
+C_init[N_FOURIER + 2] = 0.10   # b2 — breaks left-right symmetry
 
 # ── Fixed particle ensemble ───────────────────────────────────────────────────
 rng0 = np.random.default_rng(SEED_INIT)
@@ -107,16 +98,15 @@ v0   = rng0.standard_normal((N_PARTICLES, 2))
 
 
 # ── Objective and terminal adjoint ────────────────────────────────────────────
-# Simple experiment: L = (1/N) Σ |x_M|²   (minimised by a circular boundary).
 def compute_L(history):
     xM = history.final_positions
     return float(np.mean(np.sum(xM ** 2, axis=1)))
 
 def term_beta(_v, _x):
-    return np.zeros_like(_v)   # L has no velocity dependence
+    return np.zeros_like(_v)
 
 def term_alpha(_v, xM):
-    return 2.0 * xM / len(xM)  # ∂(mean|x|²)/∂x_{M,i} = 2 x_{M,i} / N
+    return 2.0 * xM / len(xM)
 
 
 # ── Penalty helpers ───────────────────────────────────────────────────────────
@@ -146,20 +136,17 @@ def boundary_pts(C, n=400):
     return np.array([gamma(t, C) for t in np.linspace(0, 1, n)])
 
 
-# ── Parallel worker (module-level so ProcessPoolExecutor can pickle it) ───────
-# On Linux the default fork start method gives workers access to all globals
-# (x0, v0, DT, N_STEPS, compute_L, BIRD_E, …) without re-passing them.
+# ── Parallel worker ───────────────────────────────────────────────────────────
 def _forward_sim(C, seed):
     return ForwardSimulation(
         C,
         DT,
-        n_coll_pairs=None,  # unused; collision rate from Bird's formula + cells
+        n_coll_pairs=None,
         seed=seed,
         e=BIRD_E,
         mesh_size=MESH_SIZE,
         num_boundary_points=NUM_BOUNDARY_POINTS,
     )
-
 
 def _run_one(args):
     C, seed = args
@@ -179,7 +166,7 @@ if __name__ == '__main__':
           f'BIRD_E={BIRD_E}  mesh={MESH_SIZE}')
     print(f'Initial shape:  r ∈ [{min(_rs):.3f}, {max(_rs):.3f}]  '
           f'(min>0: {min(_rs)>0},  max<BOX: {max(_rs)<BOX_HALF})')
-    A_TARGET = area(C_init)   # preserve initial domain area throughout optimisation
+    A_TARGET = area(C_init)
     print(f'Initial area: {A_TARGET:.4f}  (target for area penalty; '
           f'equivalent circle radius R≈{np.sqrt(A_TARGET/np.pi):.4f})')
 
@@ -204,13 +191,10 @@ if __name__ == '__main__':
             area_hist.append(A_now)
             grad_norm_hist.append(float(np.linalg.norm(g_L)))
 
-            # Area penalty keeps Area(C) ≈ A_TARGET; quadratic penalty gradient
             area_viol = A_now - A_TARGET
             total = g_L + LAM_AREA * area_viol * area_gradient(C) + LAM_BOX * box_penalty_grad(C)
 
             # Adam update with cosine-annealed learning rate
-            # LR decays from LR down to LR_MIN, keeping large steps early and
-            # fine-tuning near the optimum without overshooting.
             t_adam = it + 1
             lr_t   = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
             adam_m = BETA1 * adam_m + (1 - BETA1) * total
@@ -225,7 +209,7 @@ if __name__ == '__main__':
             if it % 20 == 0 or it == N_ITER - 1:
                 elapsed = time.time() - t_start
                 print(f'  iter {it:3d}: L={L:.4f}  A={A_now:.4f}  '
-                      f'a3={C[3]:.4f}  b3={C[N_FOURIER+3]:.4f}  '
+                      f'a2={C[2]:.4f}  b2={C[N_FOURIER+2]:.4f}  '
                       f'lr={lr_t:.4f}  [{elapsed:.0f}s elapsed]')
 
     C_snapshots.append(C.copy())
@@ -278,7 +262,7 @@ if __name__ == '__main__':
     ax.set_title(f'mean |x|²: {L_init:.4f} → {L_opt:.4f}  ({pct:.1f}% ↓)')
     ax.legend(fontsize=8, loc='upper right')
 
-    plt.suptitle('Simple — minimise mean |x|²  (area-constrained, Adam)',
+    plt.suptitle('2-mode simple — minimise mean |x|²  (area-constrained, Adam)',
                  fontsize=12, fontweight='bold')
     plt.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'convergence.png'), dpi=140, bbox_inches='tight')
@@ -305,7 +289,7 @@ if __name__ == '__main__':
     ax2.set_title('Radial profile r(θ)', pad=15)
     ax2.legend(fontsize=9, loc='lower right')
 
-    plt.suptitle('Simple — boundary shape', fontsize=12, fontweight='bold')
+    plt.suptitle('2-mode simple — boundary shape', fontsize=12, fontweight='bold')
     plt.tight_layout()
     fig2.savefig(os.path.join(OUT_DIR, 'boundary_comparison.png'), dpi=140, bbox_inches='tight')
     print('Saved boundary_comparison.png')
@@ -317,7 +301,7 @@ if __name__ == '__main__':
     fig3.savefig(os.path.join(OUT_DIR, 'density.png'), dpi=140, bbox_inches='tight')
     print('Saved density.png')
 
-    # ── Figure 4: Landscape sweep along a₃ ───────────────────────────────────
+    # ── Figure 4: Landscape sweep along a₂ ───────────────────────────────────
     def quick_L(C_, seed=0, n_avg=8):
         vals = [
             compute_L(_forward_sim(C_, seed + s).run(x0.copy(), v0.copy(), N_STEPS))
@@ -326,9 +310,9 @@ if __name__ == '__main__':
         return float(np.mean(vals))
 
     fig4, axes4 = plt.subplots(1, 2, figsize=(12, 4))
-    d_a3 = np.zeros_like(C_opt); d_a3[3] = 1.0
-    plot_objective_landscape_1d(C_opt, d_a3, (-0.20, 0.20), quick_L, n_points=17, ax=axes4[0])
-    axes4[0].set_title('Sweep $a_3$ (3-lobe mode) at $C_{\\mathrm{opt}}$')
+    d_a2 = np.zeros_like(C_opt); d_a2[2] = 1.0
+    plot_objective_landscape_1d(C_opt, d_a2, (-0.20, 0.20), quick_L, n_points=17, ax=axes4[0])
+    axes4[0].set_title('Sweep $a_2$ (2-lobe mode) at $C_{\\mathrm{opt}}$')
 
     sim_tmp  = _forward_sim(C_opt, 0)
     hist_tmp = sim_tmp.run(x0.copy(), v0.copy(), N_STEPS)

@@ -142,7 +142,7 @@ def dtheta_inter_dC(theta_inter: float, v_prime, C) -> np.ndarray:
     factor  = vy * c2 - vx * s2
     denom   = r_th * factor - 2 * np.pi * r * (vy * s2 + vx * c2)
 
-    if abs(denom) < 1e-14:
+    if abs(denom) < 1e-2:   # near-tangential: gradient is singular → zero out
         return np.zeros(len(C))
 
     return -dr_dC(theta_inter, C) * factor / denom   # (2N+1,)
@@ -270,11 +270,18 @@ def shape_gradient(history, betas: np.ndarray, alphas: np.ndarray) -> np.ndarray
             i     = rec.idx
             theta = rec.theta_inter
 
-            dv_dC = dv_reflected_dC(theta, rec.v_prime, C)            # (2, 2N+1)
+            dv_dC = dv_reflected_dC(theta, rec.v_prime, C)               # (2, 2N+1)
             dx_dC = dx_reflected_dC(theta, rec.x_prime, rec.v_prime, C)  # (2, 2N+1)
 
-            grad += beta_k1[i]  @ dv_dC    # (2,)·(2,2N+1) → (2N+1,)
-            grad += alpha_k1[i] @ dx_dC
+            contrib = beta_k1[i] @ dv_dC + alpha_k1[i] @ dx_dC          # (2N+1,)
+
+            # Per-particle clipping: prevents a single near-tangential reflection
+            # from dominating (and corrupting) the gradient direction.
+            c_norm = np.linalg.norm(contrib)
+            if c_norm > 1.0:
+                contrib *= 1.0 / c_norm
+
+            grad += contrib
 
     return grad
 
@@ -320,6 +327,37 @@ def perimeter_gradient(C, n_quad: int = 400) -> np.ndarray:
         grad += (gp[0] * dgp1 + gp[1] * dgp2) / gp_n
 
     return grad / n_quad
+
+
+# ---------------------------------------------------------------------------
+# Area and its gradient (exact, closed-form via Parseval)
+# ---------------------------------------------------------------------------
+
+def area(C) -> float:
+    """
+    Exact area enclosed by the Fourier boundary.
+
+    Area(C) = π c₀² + (π/2) Σₖ (aₖ² + bₖ²)
+
+    Proof: Area = π ∫₀¹ r(θ)² dθ; by Parseval ∫₀¹ r² dθ = c₀² + ½ Σ(aₖ²+bₖ²).
+    """
+    C = np.asarray(C, dtype=float)
+    return np.pi * C[0] ** 2 + (np.pi / 2) * np.sum(C[1:] ** 2)
+
+
+def area_gradient(C) -> np.ndarray:
+    """
+    Exact gradient ∂Area/∂C.  Shape (2N+1,).
+
+        ∂Area/∂c₀ = 2π c₀
+        ∂Area/∂aₖ = π aₖ
+        ∂Area/∂bₖ = π bₖ
+    """
+    C = np.asarray(C, dtype=float)
+    grad = np.empty_like(C)
+    grad[0] = 2 * np.pi * C[0]
+    grad[1:] = np.pi * C[1:]
+    return grad
 
 
 def project_step_perimeter_cap(

@@ -1,20 +1,24 @@
 """
 Complex DSMC shape optimisation — cluster version.
 
-Objective : minimise mean kinetic energy ("heat") inside the L-shaped inscribed
-            polygon at the final time:
+Objective : maximise mean Gaussian overlap with an L-shaped target region,
+            implemented as minimising
 
-                L = (1/N) Σᵢ 𝟙_L(xᵢᴹ) · ‖vᵢᴹ‖²
+                L = −(1/N) Σᵢ φ(xᵢᴹ),    φ(x) = Σⱼ exp(−|x − tⱼ|² / 2σ²)
 
-            Terminal adjoint: β_M = (2/N) 𝟙_L v_M, α_M = 0.
+            where tⱼ are centres distributed inside the L-region and σ = 0.13.
 
-Improvements over the local script:
-  • N_AVG=32 gradient realisations parallelised across N_WORKERS CPU cores.
-  • Adam optimiser with per-coefficient adaptive learning rates.
-  • N_PARTICLES≈1000, N_STEPS≈50–80, Bird's e≈5–20 (matches simple cluster).
-  • Hard perimeter cap P_MAX (material budget).
+Constraint: area(C) ≈ A_TARGET  (quadratic penalty, coefficient LAM_AREA)
 
-Expected runtime: scales with N_PARTICLES·N_STEPS·N_AVG (longer than old N=300 runs).
+Theory (provably obvious optimum):
+  At ergodic equilibrium the particle distribution is uniform in D, so
+      E[L] ≈ −(1/Area(D)) ∫∫_D φ(x) dA.
+  Minimising E[L] under fixed area = maximising ∫∫_D φ(x) dA, i.e., shifting
+  the domain to overlap maximally with the L-shaped Gaussian landscape.
+  The qualitatively obvious optimum is a boundary that extends into/toward
+  the L-region and is compressed elsewhere — an asymmetric star-shape biased
+  in the direction of the L-target.  No circle or ellipse achieves this; the
+  adjoint method must discover the optimal irregular shape.
 
 Run:
     python experiments/complex/run_complex_cluster.py
@@ -37,9 +41,9 @@ from adjoint import ForwardSimulation
 from adjoint.boundary_geometry import gamma, radius_r
 from adjoint.shape_gradient import (
     shape_gradient,
-    perimeter,
+    area,
+    area_gradient,
     dr_dC,
-    project_step_perimeter_cap,
 )
 from adjoint.visualization import (
     animate_comparison, plot_convergence,
@@ -64,9 +68,10 @@ BOX_HALF = 1.20
 R_MAX    = BOX_HALF
 
 N_ITER    = 300
-LR        = 3e-3
+LR        = 5e-3          # Adam learning rate (decays to LR_MIN over training)
+LR_MIN    = 5e-4          # cosine-annealing floor
 LAM_BOX   = 8.0
-P_MAX     = 2 * np.pi * R_INIT * 1.22
+LAM_AREA  = 30.0          # area-equality penalty: keeps Area(C) ≈ A_TARGET
 
 N_AVG     = 32
 N_WORKERS = 16
@@ -85,10 +90,27 @@ A_MAX_FRAC = 0.45
 L_VERTS = [(-0.35,  0.35), (-0.05,  0.35), (-0.05, -0.05),
            ( 0.35, -0.05), ( 0.35, -0.35), (-0.35, -0.35)]
 
+# Gaussian centres inside the L-region (3 along vertical arm, 2 along horizontal)
+_TARGET_PTS = np.array([
+    [-0.20,  0.20],   # vertical arm, top
+    [-0.20,  0.00],   # vertical arm, middle
+    [-0.20, -0.20],   # vertical arm, bottom (corner of L)
+    [ 0.00, -0.20],   # horizontal arm
+    [ 0.20, -0.20],   # horizontal arm, far end
+])
+_SIGMA = 0.13
+
+
+def _phi(x):
+    """Sum-Gaussian landscape over L-shape centres.  Shape (len(x),)."""
+    diff = x[:, np.newaxis, :] - _TARGET_PTS[np.newaxis, :, :]   # (N, T, 2)
+    sq   = np.sum(diff ** 2, axis=2)                              # (N, T)
+    return np.sum(np.exp(-sq / (2 * _SIGMA ** 2)), axis=1)        # (N,)
+
 
 def _inscribed_mask_L_polygon(xM, verts=L_VERTS):
-    """(N,) bool — positions inside the L polygon (even–odd ray rule)."""
-    n = len(verts)
+    """(N,) bool — positions inside the L polygon (winding number rule)."""
+    n   = len(verts)
     pts = list(verts) + [verts[0]]
     out = np.zeros(len(xM), dtype=bool)
     for i, (x, y) in enumerate(xM):
@@ -101,6 +123,7 @@ def _inscribed_mask_L_polygon(xM, verts=L_VERTS):
                     w += 1
         out[i] = bool(w % 2)
     return out
+
 
 # ── Initial condition: irregular multi-lobe shape ─────────────────────────────
 # N_FOURIER=5 → C has 11 entries: [c0, a1..a5, b1..b5]
@@ -121,22 +144,27 @@ v0   = rng0.standard_normal((N_PARTICLES, 2))
 
 
 # ── Objective and terminal adjoint ────────────────────────────────────────────
+# L = −(1/N) Σᵢ φ(xᵢᴹ)   →   maximise Gaussian overlap with L-region.
 def compute_L(history):
-    """Mean ‖v‖², counting only particles whose final position lies inside L."""
     xM = history.final_positions
-    vM = history.final_velocities
-    m = _inscribed_mask_L_polygon(xM)
-    return float(np.mean(m * np.sum(vM ** 2, axis=1)))
+    return -float(np.mean(_phi(xM)))
 
 
-def term_beta(vM, xM):
-    N = len(xM)
-    m = _inscribed_mask_L_polygon(xM)
-    return (2.0 / N) * m[:, np.newaxis] * vM
+def term_beta(_v, _x):
+    return np.zeros_like(_v)   # L has no velocity dependence
 
 
-def term_alpha(_v, _x):
-    return np.zeros_like(_x)
+def term_alpha(_v, xM):
+    """
+    ∂L/∂xᵢᴹ = (1/N) Σⱼ exp(−|xᵢ−tⱼ|²/2σ²) · (xᵢ−tⱼ)/σ²
+    Points away from each Gaussian centre, weighted by proximity.
+    Gradient descent will push the domain toward the centres.
+    """
+    N    = len(xM)
+    diff = xM[:, np.newaxis, :] - _TARGET_PTS[np.newaxis, :, :]  # (N, T, 2)
+    sq   = np.sum(diff ** 2, axis=2)                              # (N, T)
+    w    = np.exp(-sq / (2 * _SIGMA ** 2))                        # (N, T)
+    return np.sum(w[:, :, np.newaxis] * diff, axis=1) / (_SIGMA ** 2 * N)
 
 
 # ── Diagnostic: fraction of particles inside L ────────────────────────────────
@@ -208,17 +236,15 @@ if __name__ == '__main__':
           f'BIRD_E={BIRD_E}  mesh={MESH_SIZE}')
     print(f'Initial shape:  r ∈ [{min(_rs):.3f}, {max(_rs):.3f}]  '
           f'(min>0: {min(_rs)>0},  max<BOX: {max(_rs)<BOX_HALF})')
-    _p0 = perimeter(C_init)
-    assert _p0 <= P_MAX + 1e-6, (
-        f'perimeter(C_init)={_p0:.4f} exceeds P_MAX={P_MAX:.4f}; '
-        'increase P_MAX or shrink initial Fourier coefficients.')
-    print(f'Initial perimeter: {_p0:.4f}  (material cap P_MAX={P_MAX:.4f})')
+    A_TARGET = area(C_init)
+    print(f'Initial area: {A_TARGET:.4f}  (target for area penalty; '
+          f'equivalent circle radius R≈{np.sqrt(A_TARGET/np.pi):.4f})')
 
     C      = C_init.copy()
     adam_m = np.zeros_like(C)
     adam_v = np.zeros_like(C)
 
-    obj_hist, perim_hist, grad_norm_hist = [], [], []
+    obj_hist, area_hist, grad_norm_hist = [], [], []
     C_snapshots = [C.copy()]
     t_start = time.time()
 
@@ -231,29 +257,32 @@ if __name__ == '__main__':
             L   = float(np.mean([r[0] for r in results]))
             g_L = np.mean([r[1] for r in results], axis=0)
             obj_hist.append(L)
-            P_now = perimeter(C)
-            perim_hist.append(P_now)
+            A_now = area(C)
+            area_hist.append(A_now)
             grad_norm_hist.append(float(np.linalg.norm(g_L)))
 
-            total = g_L + LAM_BOX * box_penalty_grad(C)
+            # Area penalty keeps Area(C) ≈ A_TARGET
+            area_viol = A_now - A_TARGET
+            total = g_L + LAM_AREA * area_viol * area_gradient(C) + LAM_BOX * box_penalty_grad(C)
 
+            # Adam update with cosine-annealed learning rate
             t_adam = it + 1
+            lr_t   = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
             adam_m = BETA1 * adam_m + (1 - BETA1) * total
             adam_v = BETA2 * adam_v + (1 - BETA2) * total ** 2
             m_hat  = adam_m / (1 - BETA1 ** t_adam)
             v_hat  = adam_v / (1 - BETA2 ** t_adam)
             step_dir = m_hat / (np.sqrt(v_hat) + EPS_ADAM)
-            C = project_step_perimeter_cap(C, step_dir, LR, _project_C, P_MAX)
+            C = _project_C(C - lr_t * step_dir)
 
             if it % 30 == 0:
                 C_snapshots.append(C.copy())
             if it % 20 == 0 or it == N_ITER - 1:
                 elapsed = time.time() - t_start
-                # diagnostic: run one extra sim to count particles in L
                 frac = compute_L_count(
                     _forward_sim(C, 9999).run(x0.copy(), v0.copy(), N_STEPS))
-                print(f'  iter {it:3d}: L={L:.4f}  P={P_now:.3f}  '
-                      f'in_L={100*frac:.1f}%  [{elapsed:.0f}s elapsed]')
+                print(f'  iter {it:3d}: L={L:.4f}  A={A_now:.4f}  '
+                      f'in_L={100*frac:.1f}%  lr={lr_t:.4f}  [{elapsed:.0f}s elapsed]')
 
     C_snapshots.append(C.copy())
     C_opt = C.copy()
@@ -264,8 +293,6 @@ if __name__ == '__main__':
     print(f'C_opt = {np.round(C_opt, 4)}')
     _rs = [radius_r(t, C_opt) for t in np.linspace(0, 1, 400)]
     print(f'r(θ): min={min(_rs):.4f}  max={max(_rs):.4f}  all_positive={min(_rs)>0}')
-    print(f'Perimeter: {perimeter(C_init):.4f} → {perimeter(C_opt):.4f}  '
-          f'(cap P_MAX={P_MAX:.4f})')
 
     # ── Final evaluation ──────────────────────────────────────────────────────
     sim_init  = _forward_sim(C_init, 99)
@@ -283,7 +310,7 @@ if __name__ == '__main__':
     fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
 
     plot_convergence(obj_hist, grad_norm_hist, ax=axes[0])
-    axes[0].set_title('Convergence  (L = mean ‖v‖² in L; Adam, 32 real./iter)')
+    axes[0].set_title('Convergence  (L = −mean φ in L-region; Adam, 32 real./iter)')
 
     ax = axes[1]
     ax.add_patch(plt.Rectangle((-BOX_HALF, -BOX_HALF), 2*BOX_HALF, 2*BOX_HALF,
@@ -298,7 +325,7 @@ if __name__ == '__main__':
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, N_ITER))
     plt.colorbar(sm, ax=ax, label='Iteration')
     ax.set_xlim(-BOX_HALF*1.1, BOX_HALF*1.1); ax.set_ylim(-BOX_HALF*1.1, BOX_HALF*1.1)
-    ax.set_aspect('equal'); ax.set_title('Boundary evolution (green = inscribed L)')
+    ax.set_aspect('equal'); ax.set_title('Boundary evolution (green = L-region)')
 
     ax = axes[2]
     ax.add_patch(plt.Rectangle((-BOX_HALF, -BOX_HALF), 2*BOX_HALF, 2*BOX_HALF,
@@ -310,14 +337,15 @@ if __name__ == '__main__':
     inside = _inscribed_mask_L_polygon(xf)
     ax.scatter(xf[~inside, 0], xf[~inside, 1], s=9,  c='steelblue', alpha=0.45, zorder=3)
     ax.scatter(xf[ inside, 0], xf[ inside, 1], s=18, c='crimson', alpha=0.90, zorder=4,
-               label=f'In L (heat) ({inside.sum()})')
+               label=f'In L ({inside.sum()})')
     ax.set_xlim(-BOX_HALF*1.1, BOX_HALF*1.1); ax.set_ylim(-BOX_HALF*1.1, BOX_HALF*1.1)
     ax.set_aspect('equal')
-    ax.set_title(f'Heat L: {L_init:.3f} → {L_opt:.3f}  |  in L: '
-                 f'{100*f_init:.0f}% → {100*f_opt:.0f}%')
+    ax.set_title(f'in L: {100*f_init:.0f}% → {100*f_opt:.0f}%  |  '
+                 f'φ: {-L_init:.3f} → {-L_opt:.3f}')
     ax.legend(fontsize=8, loc='upper right')
 
-    plt.suptitle('Complex — minimise heat in L  (cluster, Adam)', fontsize=12, fontweight='bold')
+    plt.suptitle('Complex — maximise Gaussian overlap with L-region  (cluster, Adam)',
+                 fontsize=12, fontweight='bold')
     plt.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'convergence.png'), dpi=140, bbox_inches='tight')
     print('Saved convergence.png')
