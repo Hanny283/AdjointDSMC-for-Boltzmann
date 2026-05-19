@@ -10,7 +10,7 @@ The perimeter constraint does NOT share this property for k≥3 modes.
 
 Improvements over the local script:
   • N_AVG gradient realisations parallelised across N_WORKERS CPU cores.
-  • Adam optimiser with per-coefficient adaptive learning rates.
+  • Gradient descent with cosine-annealed learning rate.
   • N_PARTICLES≈1000, N_STEPS≈50–80, and Bird's parameter e≈5–20 so collision
     rate is reduced (adjoint signal survives to the final time; see table in docs).
   • Explicit BIRD_E, MESH_SIZE, NUM_BOUNDARY_POINTS for ForwardSimulation.
@@ -70,18 +70,13 @@ INNER_HALF = 0.35
 R_MAX      = BOX_HALF
 
 N_ITER    = 600
-LR        = 6e-3          # Adam learning rate (decays to LR_MIN over training)
+LR        = 6e-3          # learning rate (cosine-annealed from LR down to LR_MIN)
 LR_MIN    = 5e-4          # cosine-annealing floor — fine-tunes near circle
 LAM_BOX   = 8.0
 LAM_AREA  = 30.0          # area-equality penalty: keeps Area(C) ≈ A_TARGET
 
 N_AVG     = 32            # gradient realisations per iteration (32–64 typical)
 N_WORKERS = 16            # parallel workers (physical cores)
-
-# Adam hyper-parameters
-BETA1    = 0.9
-BETA2    = 0.999
-EPS_ADAM = 1e-8
 
 C0_MIN     = 0.35
 C0_MAX     = 1.10
@@ -183,15 +178,13 @@ if __name__ == '__main__':
     print(f'Initial area: {A_TARGET:.4f}  (target for area penalty; '
           f'equivalent circle radius R≈{np.sqrt(A_TARGET/np.pi):.4f})')
 
-    C      = C_init.copy()
-    adam_m = np.zeros_like(C)
-    adam_v = np.zeros_like(C)
+    C = C_init.copy()
 
     obj_hist, area_hist, grad_norm_hist = [], [], []
     C_snapshots = [C.copy()]
     t_start = time.time()
 
-    print('\nRunning optimisation (Adam, parallelised) ...')
+    print('\nRunning optimisation (GD, parallelised) ...')
     with ProcessPoolExecutor(max_workers=N_WORKERS) as pool:
         for it in range(N_ITER):
             seeds = [(C, it * N_AVG + s) for s in range(N_AVG)]
@@ -208,17 +201,9 @@ if __name__ == '__main__':
             area_viol = A_now - A_TARGET
             total = g_L + LAM_AREA * area_viol * area_gradient(C) + LAM_BOX * box_penalty_grad(C)
 
-            # Adam update with cosine-annealed learning rate
-            # LR decays from LR down to LR_MIN, keeping large steps early and
-            # fine-tuning near the optimum without overshooting.
-            t_adam = it + 1
-            lr_t   = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
-            adam_m = BETA1 * adam_m + (1 - BETA1) * total
-            adam_v = BETA2 * adam_v + (1 - BETA2) * total ** 2
-            m_hat  = adam_m / (1 - BETA1 ** t_adam)
-            v_hat  = adam_v / (1 - BETA2 ** t_adam)
-            step_dir = m_hat / (np.sqrt(v_hat) + EPS_ADAM)
-            C = _project_C(C - lr_t * step_dir)
+            # Gradient descent with cosine-annealed learning rate
+            lr_t = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
+            C = _project_C(C - lr_t * total)
 
             if it % 30 == 0:
                 C_snapshots.append(C.copy())
@@ -249,8 +234,8 @@ if __name__ == '__main__':
     # ── Figure 1: Convergence + evolution + comparison ────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
 
-    plot_convergence(obj_hist, grad_norm_hist, ax=axes[0])
-    axes[0].set_title('Convergence  (Adam, 32 realisations/iter)')
+    plot_convergence(obj_hist, grad_norm_hist, ax=axes[0], smooth_window=20)
+    axes[0].set_title('Convergence  (GD, 32 realisations/iter)')
 
     ax = axes[1]
     ax.add_patch(plt.Rectangle((-BOX_HALF, -BOX_HALF), 2*BOX_HALF, 2*BOX_HALF,
@@ -278,7 +263,7 @@ if __name__ == '__main__':
     ax.set_title(f'mean |x|²: {L_init:.4f} → {L_opt:.4f}  ({pct:.1f}% ↓)')
     ax.legend(fontsize=8, loc='upper right')
 
-    plt.suptitle('Simple — minimise mean |x|²  (area-constrained, Adam)',
+    plt.suptitle('Simple — minimise mean |x|²  (area-constrained, GD)',
                  fontsize=12, fontweight='bold')
     plt.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'convergence.png'), dpi=140, bbox_inches='tight')

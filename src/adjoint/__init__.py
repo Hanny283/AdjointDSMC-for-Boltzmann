@@ -78,6 +78,8 @@ from .shape_gradient import (
     dv_reflected_dC,
     dx_reflected_dC,
     shape_gradient,
+    area,
+    area_gradient,
     perimeter,
     perimeter_gradient,
     project_step_perimeter_cap,
@@ -101,6 +103,7 @@ __all__ = [
     # shape gradient
     "dr_dC", "drtheta_dC", "dtheta_inter_dC",
     "dv_reflected_dC", "dx_reflected_dC",
-    "shape_gradient", "perimeter", "perimeter_gradient",
+    "shape_gradient", "area", "area_gradient",
+    "perimeter", "perimeter_gradient",
     "project_step_perimeter_cap",
 ]

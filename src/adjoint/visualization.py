@@ -215,7 +215,7 @@ def animate_comparison(hist_a, C_a, hist_b, C_b,
 # Convergence plot
 # ---------------------------------------------------------------------------
 
-def plot_convergence(obj_hist, grad_norm_hist=None, ax=None):
+def plot_convergence(obj_hist, grad_norm_hist=None, ax=None, smooth_window=1):
     """
     Plot objective value and (optionally) gradient norm vs iteration.
 
@@ -224,6 +224,10 @@ def plot_convergence(obj_hist, grad_norm_hist=None, ax=None):
     obj_hist : list of float
     grad_norm_hist : list of float or None
     ax : matplotlib Axes or None
+    smooth_window : int
+        If > 1, overlay a centred rolling-mean curve of this width on top
+        of the raw (faded) objective curve so the trend is legible even
+        with noisy stochastic gradients.
 
     Returns
     -------
@@ -233,7 +237,20 @@ def plot_convergence(obj_hist, grad_norm_hist=None, ax=None):
         _, ax = plt.subplots(figsize=(7, 4))
 
     iters = np.arange(len(obj_hist))
-    ax.plot(iters, obj_hist, 'b-', lw=1.8, label='Objective L')
+    obj   = np.asarray(obj_hist)
+
+    if smooth_window > 1:
+        ax.plot(iters, obj, color='cornflowerblue', lw=1.0, alpha=0.35,
+                label='Objective L (raw)')
+        w        = min(smooth_window, len(obj))
+        kernel   = np.ones(w) / w
+        smoothed = np.convolve(obj, kernel, mode='valid')
+        s_iters  = np.arange(w - 1, len(obj))
+        ax.plot(s_iters, smoothed, 'b-', lw=2.2,
+                label=f'Objective L (rolling mean, w={w})')
+    else:
+        ax.plot(iters, obj, 'b-', lw=1.8, label='Objective L')
+
     ax.set_xlabel('Iteration')
     ax.set_ylabel('L', color='b')
     ax.grid(True, alpha=0.35)

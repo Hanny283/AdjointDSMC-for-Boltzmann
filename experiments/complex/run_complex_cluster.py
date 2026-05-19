@@ -68,17 +68,13 @@ BOX_HALF = 1.20
 R_MAX    = BOX_HALF
 
 N_ITER    = 300
-LR        = 5e-3          # Adam learning rate (decays to LR_MIN over training)
+LR        = 5e-3          # learning rate (cosine-annealed from LR down to LR_MIN)
 LR_MIN    = 5e-4          # cosine-annealing floor
 LAM_BOX   = 8.0
 LAM_AREA  = 30.0          # area-equality penalty: keeps Area(C) ≈ A_TARGET
 
 N_AVG     = 32
 N_WORKERS = 16
-
-BETA1    = 0.9
-BETA2    = 0.999
-EPS_ADAM = 1e-8
 
 C0_MIN     = 0.35
 C0_MAX     = 1.10
@@ -240,15 +236,13 @@ if __name__ == '__main__':
     print(f'Initial area: {A_TARGET:.4f}  (target for area penalty; '
           f'equivalent circle radius R≈{np.sqrt(A_TARGET/np.pi):.4f})')
 
-    C      = C_init.copy()
-    adam_m = np.zeros_like(C)
-    adam_v = np.zeros_like(C)
+    C = C_init.copy()
 
     obj_hist, area_hist, grad_norm_hist = [], [], []
     C_snapshots = [C.copy()]
     t_start = time.time()
 
-    print('\nRunning optimisation (Adam, parallelised) ...')
+    print('\nRunning optimisation (GD, parallelised) ...')
     with ProcessPoolExecutor(max_workers=N_WORKERS) as pool:
         for it in range(N_ITER):
             seeds = [(C, it * N_AVG + s) for s in range(N_AVG)]
@@ -265,15 +259,9 @@ if __name__ == '__main__':
             area_viol = A_now - A_TARGET
             total = g_L + LAM_AREA * area_viol * area_gradient(C) + LAM_BOX * box_penalty_grad(C)
 
-            # Adam update with cosine-annealed learning rate
-            t_adam = it + 1
-            lr_t   = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
-            adam_m = BETA1 * adam_m + (1 - BETA1) * total
-            adam_v = BETA2 * adam_v + (1 - BETA2) * total ** 2
-            m_hat  = adam_m / (1 - BETA1 ** t_adam)
-            v_hat  = adam_v / (1 - BETA2 ** t_adam)
-            step_dir = m_hat / (np.sqrt(v_hat) + EPS_ADAM)
-            C = _project_C(C - lr_t * step_dir)
+            # Gradient descent with cosine-annealed learning rate
+            lr_t = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + np.cos(np.pi * it / N_ITER))
+            C = _project_C(C - lr_t * total)
 
             if it % 30 == 0:
                 C_snapshots.append(C.copy())
@@ -309,8 +297,8 @@ if __name__ == '__main__':
     # ── Figure 1: Convergence + evolution + comparison ────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
 
-    plot_convergence(obj_hist, grad_norm_hist, ax=axes[0])
-    axes[0].set_title('Convergence  (L = −mean φ in L-region; Adam, 32 real./iter)')
+    plot_convergence(obj_hist, grad_norm_hist, ax=axes[0], smooth_window=20)
+    axes[0].set_title('Convergence  (L = −mean φ in L-region; GD, 32 real./iter)')
 
     ax = axes[1]
     ax.add_patch(plt.Rectangle((-BOX_HALF, -BOX_HALF), 2*BOX_HALF, 2*BOX_HALF,
@@ -344,7 +332,7 @@ if __name__ == '__main__':
                  f'φ: {-L_init:.3f} → {-L_opt:.3f}')
     ax.legend(fontsize=8, loc='upper right')
 
-    plt.suptitle('Complex — maximise Gaussian overlap with L-region  (cluster, Adam)',
+    plt.suptitle('Complex — maximise Gaussian overlap with L-region  (cluster, GD)',
                  fontsize=12, fontweight='bold')
     plt.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'convergence.png'), dpi=140, bbox_inches='tight')
